@@ -38,7 +38,7 @@ const out = (
     | UIMessageChunk
     | { type: "history"; messages: UIMessage[]; file?: string }
     | { type: "info"; sessionId: string | null; resume: string | null }
-    | { type: "command"; command: string; args: string[]; cwd: string }
+    | { type: "command"; command: string; args: string[]; cwd: string; trust?: { prompt: string; keys: string[]; harness: string } }
     | { type: "holder"; holder: Holder | null; choices: ("fork" | "open")[] }
     | { type: "mark" },
 ) =>
@@ -317,7 +317,9 @@ function interactiveOp(input: Input) {
     ...(session ? ["--resume", session] : []),
     ...(fork ? ["--fork-session", "--session-id", fork] : []),
   ];
-  out({ type: "command", command: process.env.CLAUDE_BIN ?? "claude", args, cwd: input.cwd });
+  // A folder it never worked in (its git root) gets a trust dialog first, which defaults to "No, exit".
+  const trust = { prompt: "Yes, I trust this folder", keys: ["\x1b[B", "\r"], harness: "Claude Code" };
+  out({ type: "command", command: process.env.CLAUDE_BIN ?? "claude", args, cwd: input.cwd, trust });
 }
 
 /** The same session from outside the app. */

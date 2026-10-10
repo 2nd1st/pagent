@@ -1,6 +1,6 @@
 {
   "name": "create-pagent",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Start a pagent app: npm create pagent my-app",
   "license": "MIT",
   "author": "LEOYUN <leo@secondfirst.ai>",

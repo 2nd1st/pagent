@@ -58,4 +58,4 @@ console.log(`Created ${dir}
   npm install
   npm run dev          # then open http://127.0.0.1:4870
 
-The first time an agent runs here, open its terminal once and trust the folder (Claude Code and Codex ask).`);
+The first time an agent runs here, Claude Code / Codex asks whether to trust the folder: the page shows the question.`);

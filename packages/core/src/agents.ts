@@ -6,14 +6,14 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, watch, type FSWatcher } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { UIMessage, UIMessageChunk } from "ai";
 import { engine } from "./engine.ts";
 import { broadcast } from "./events.ts";
 import type { Nodes } from "./nodes.ts";
-import { pendingFor } from "./questions.ts";
+import { askUser, pendingFor } from "./questions.ts";
 import { attachProc, listProcs, procOp, spawnProc, type ProcEvent, type ProcInfo } from "./daemon-client.ts";
-import { afterTurn, openTerminal, paste, stopTerminal, terminalOf, terminalStatus, typeInto, whenQuiet, whenReady, type Command, type Term } from "./terminal.ts";
+import { afterTurn, openTerminal, paste, stopTerminal, terminalOf, terminalStatus, pressKeys, typeInto, whenQuiet, whenUp, type Command, type Term } from "./terminal.ts";
 
 export type AgentRef = { node: string; agent: string };
 export type AskInput = AgentRef & {
@@ -202,8 +202,8 @@ function turnEvents(procId: string, onLine: (e: any) => void, done: (code: numbe
 
 // ---------------------------------------------------------------- turns in the TUI
 
-// Agents whose TUI did not come up unattended → until when they run headless. Trust is kept per git root, so a
-// terminal opened by hand elsewhere in the app may well have fixed it: try again after a while.
+// Agents whose TUI did not come up → until when they run headless. Trust is kept per git root, so a terminal opened
+// by hand elsewhere in the app may well have fixed it: try again after a while (or never, if the user said no).
 const tuiUnavailable = new Map<string, number>();
 const TUI_RETRY = 5 * 60_000;
 
@@ -212,16 +212,59 @@ const runsInTui = (decl: Record<string, unknown>, ref: AgentRef) =>
   /^(claude-code|codex)\b/.test(String(decl.runner)) && decl.tui !== false && (tuiUnavailable.get(keyOf(ref)) ?? 0) < Date.now();
 
 /**
- * Start the agent's TUI in the daemon, unwatched. If it does not come up by itself (a folder Claude Code was never
- * trusted in shows a dialog first), give up: this turn and the next go headless until someone opens the terminal.
+ * Start the agent's TUI in the daemon, unwatched. The first time a harness works in a folder it asks to trust it
+ * (trustFolder); if the TUI does not come up, this turn and the next go headless until someone opens the terminal.
  */
 async function startTui(ctx: Ctx, ref: AgentRef): Promise<Term | null> {
-  const term = await openTerminal(ref, await interactiveCommand(ctx, ref), { cols: 120, rows: 40 });
-  if (await whenReady(term, 20_000)) return term;
-  console.warn(`the terminal of ${keyOf(ref)} did not come up unattended (a trust dialog?); running headless for a while (or until it is opened by hand)`);
-  tuiUnavailable.set(keyOf(ref), Date.now() + TUI_RETRY);
+  const cmd = await interactiveCommand(ctx, ref);
+  const term = await openTerminal(ref, cmd, { cols: 120, rows: 40 });
+  let up = await whenUp(term, 20_000, cmd.trust && new RegExp(cmd.trust.prompt));
+  if (up === "dialog") up = await trustFolder(ref, term, cmd);
+  if (up === "ready") return term;
+  if (!tuiUnavailable.has(keyOf(ref))) {
+    console.warn(`the terminal of ${keyOf(ref)} did not come up unattended; running headless for a while (or until it is opened by hand)`);
+    tuiUnavailable.set(keyOf(ref), Date.now() + TUI_RETRY);
+  }
   stopTerminal(term);
   return null;
+}
+
+/**
+ * The harness asks whether to trust the folder. That is the user's call, made in the harness's own dialog: whoever
+ * watches the terminal answers it there; otherwise it is asked on whatever page is open, like a permission, and
+ * "Trust" presses the keys that accept it. Nobody there (a trigger) or "Not now": the agent works headless, which
+ * neither harness asks about (`claude -p` skips the dialog; `codex exec` records the folder as trusted).
+ */
+async function trustFolder(ref: AgentRef, term: Term, cmd: Command): Promise<"ready" | null> {
+  const { trust } = cmd;
+  if (!trust) return null;
+  if (term.viewers.size) return (await whenUp(term, 10 * 60_000)) === "ready" ? "ready" : null;
+  const answered = new AbortController(); // in the terminal, opened meanwhile
+  void whenUp(term, 60 * 60_000).then(() => answered.abort());
+  const harness = trust.harness ?? "The agent";
+  const r = await askOrDecline(ref, () =>
+    askUser(ref, `Trust this folder for ${harness}?`, ["Trust", "Not now"], {
+      kind: "permission",
+      detail: `${trustedDir(cmd.cwd)}\n\n${harness} asks this the first time it works in a folder. Trusted, it can read, edit and run files here (each action still subject to its permissions).`,
+      signal: answered.signal,
+    }),
+  );
+  if (answered.signal.aborted) return (await whenUp(term, 0)) === "ready" ? "ready" : null;
+  answered.abort();
+  if (r.declined || !/^trust/i.test(r.answer)) {
+    if (!r.declined) tuiUnavailable.set(keyOf(ref), Infinity); // asked again once the server restarts
+    return null;
+  }
+  await pressKeys(term, trust.keys);
+  return (await whenUp(term, 20_000)) === "ready" ? "ready" : null;
+}
+
+/** What a harness trusts: the git repository the folder is in (the whole app), else the folder itself. */
+function trustedDir(dir: string): string {
+  for (let d = dir; ; d = dirname(d)) {
+    if (existsSync(join(d, ".git"))) return d;
+    if (dirname(d) === d) return dir;
+  }
 }
 
 /**
@@ -427,7 +470,7 @@ export async function interactiveCommand(ctx: Ctx, ref: AgentRef, fork = false):
     systemPrompt: systemPrompt(ref, nodeFolder(ctx, ref), String(decl.kind ?? "app")), // the TUI is the agent itself, not a side door
     options: decl,
   }, base.cwd, (e) => {
-    if (e.type === "command") cmd = { command: e.command, args: e.args, cwd: e.cwd, ...(e.titleStatus ? { titleStatus: e.titleStatus } : {}) };
+    if (e.type === "command") cmd = { command: e.command, args: e.args, cwd: e.cwd, titleStatus: e.titleStatus, trust: e.trust };
   });
   if (!cmd) throw new Error(`runner ${decl.runner} has no interactive mode`);
   return cmd;

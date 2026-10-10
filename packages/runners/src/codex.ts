@@ -37,7 +37,7 @@ const out = (
     | UIMessageChunk
     | { type: "history"; messages: UIMessage[]; file?: string }
     | { type: "info"; sessionId: string | null; resume: string | null }
-    | { type: "command"; command: string; args: string[]; cwd: string; titleStatus?: { working: string; blocked: string } }
+    | { type: "command"; command: string; args: string[]; cwd: string; titleStatus?: { working: string; blocked: string }; trust?: { prompt: string; keys: string[]; harness: string } }
     | { type: "mark" }
     | { type: "holder"; holder: { pid: number; startedAt?: string } | null; choices: "fork"[] },
 ) =>
@@ -333,7 +333,9 @@ function interactiveOp(input: Input) {
   ];
   const args = existing ? [input.fork ? "fork" : "resume", existing, ...config] : config;
   // No OSC 7501, but the title says it: a braille spinner while working, "Action Required" while waiting.
-  out({ type: "command", command: process.env.CODEX_BIN ?? "codex", args, cwd: input.cwd, titleStatus: { working: "^[\\u2800-\\u28ff]", blocked: "Action Required" } });
+  // A folder it never worked in gets a trust dialog first ("Trust and continue" is the default).
+  const trust = { prompt: "Trust and continue", keys: ["\r"], harness: "Codex" };
+  out({ type: "command", command: process.env.CODEX_BIN ?? "codex", args, cwd: input.cwd, titleStatus: { working: "^[\\u2800-\\u28ff]", blocked: "Action Required" }, trust });
 }
 
 // ---------------------------------------------------------------- follow

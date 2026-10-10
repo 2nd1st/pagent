@@ -7,7 +7,14 @@ import { attachProc, listProcs, procOp, spawnProc, type ProcEvent, type TermStat
 
 export type AgentRef = { node: string; agent: string };
 export type { TermStatus };
-export type Command = { command: string; args: string[]; cwd: string; titleStatus?: { working: string; blocked: string } };
+export type Command = {
+  command: string;
+  args: string[];
+  cwd: string;
+  titleStatus?: { working: string; blocked: string };
+  /** The dialog the TUI may put up before it starts (trusting a folder), and the keys that accept it. */
+  trust?: { prompt: string; keys: string[]; harness?: string };
+};
 
 export type Term = {
   ref: AgentRef;
@@ -70,7 +77,8 @@ export function openTerminal(ref: AgentRef, cmd: Command, size: { cols: number; 
       const id = `term:${appRoot}:${key}`;
       const { term, follow } = track(ref, id, null);
       const env = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>;
-      await spawnProc({ id, kind: "pty", ...cmd, env, ...size, meta: { app: appRoot, type: "terminal", ...ref } }, follow);
+      const { trust: _trust, ...spawn } = cmd;
+      await spawnProc({ id, kind: "pty", ...spawn, env, ...size, meta: { app: appRoot, type: "terminal", ...ref } }, follow);
       terms.set(key, term);
       resync(ref);
       return term;
@@ -132,14 +140,38 @@ export function whenQuiet(t: Term): Promise<void> {
   });
 }
 
-/** Resolves once the TUI reports a status (it is up and drawing its prompt), or false after `ms`. */
-export function whenReady(t: Term, ms: number): Promise<boolean> {
-  if (t.status) return Promise.resolve(true);
+const ANSI = /\x1b\[[0-9;?<>]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[78=>]/g;
+
+/**
+ * Resolves once the TUI is up: "ready" when it reports a status (it is drawing its prompt), "dialog" when its screen
+ * shows `dialog` first (one it puts up before it starts), null if it exits or neither happens within `ms`.
+ */
+export function whenUp(t: Term, ms: number, dialog?: RegExp): Promise<"ready" | "dialog" | null> {
+  const now = () =>
+    terms.get(keyOf(t.ref)) !== t ? null
+    : t.status ? "ready"
+    : dialog?.test(t.output.slice(-16_384).replace(ANSI, " ").replace(/\s+/g, " ")) ? "dialog"
+    : undefined;
+  const first = now();
+  if (first !== undefined) return Promise.resolve(first);
   return new Promise((resolve) => {
-    const cb = () => (t.onStatus.delete(cb), clearTimeout(timer), resolve(true));
-    const timer = setTimeout(() => (t.onStatus.delete(cb), resolve(false)), ms);
-    t.onStatus.add(cb);
+    const done = (r: "ready" | "dialog" | null) => (clearInterval(poll), clearTimeout(timer), t.onStatus.delete(check), resolve(r));
+    const check = () => {
+      const r = now();
+      if (r !== undefined) done(r);
+    };
+    const poll = setInterval(check, 250);
+    const timer = setTimeout(() => done(null), ms);
+    t.onStatus.add(check);
   });
+}
+
+/** Press keys in the TUI, one at a time (as a person would: a TUI may read a burst as one key). */
+export async function pressKeys(t: Term, keys: string[]) {
+  for (const k of keys) {
+    procOp("write", t.id, { data: k });
+    await new Promise((r) => setTimeout(r, 300));
+  }
 }
 
 /** Paste a message into the TUI and press Enter, as a user would. */
