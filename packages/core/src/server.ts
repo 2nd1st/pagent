@@ -91,8 +91,8 @@ export function startServer(opts: ServerOptions) {
   const ctx: { root: string; nodes: Nodes; baseUrl: string; agentUrl?: string } = { root, nodes, baseUrl: `http://127.0.0.1:${port}` };
   watchTree(root);
   // The daemon holds the agents' processes: take back what it kept running for this app, then start triggers
-  // (so they see those agents as busy).
-  void (async () => {
+  // (so they see those agents as busy). Requests wait for this: before it, an agent would get a second terminal.
+  const ready = (async () => {
     try {
       ctx.agentUrl = (await registerApp({ root, port, pid: process.pid })) ?? undefined;
       await recoverTerminals(root);
@@ -100,12 +100,13 @@ export function startServer(opts: ServerOptions) {
     } catch (e) {
       console.error(`pagent daemon: ${(e as Error).message}`);
     }
-    await startTriggers(ctx);
   })();
+  void ready.then(() => startTriggers(ctx));
   // Agents are resident by default; the ones declared resident: false give their process back when quiet.
   setInterval(() => void closeQuiet((ref) => residency(ctx, ref)), 60_000).unref();
 
   const server = createServer(async (req, res) => {
+    await ready;
     const url = new URL(req.url ?? "/", ctx.baseUrl);
     const q = (k: string) => url.searchParams.get(k) ?? "";
     const no = refused(req, url);
@@ -264,6 +265,7 @@ export function startServer(opts: ServerOptions) {
     const size = { cols: Number(url.searchParams.get("cols")) || 100, rows: Number(url.searchParams.get("rows")) || 30 };
     wss.handleUpgrade(req, socket, head, async (ws) => {
       try {
+        await ready;
         // One process per session: the app's own runs finish first, and another process holding the session is
         // the user's call (fork it, open anyway, or close that one). Control frames start with NUL.
         let term = terminalOf(ref);
