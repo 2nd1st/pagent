@@ -29,7 +29,7 @@ export default function Board() {
 ```
 
 ```sh
-npm create pagentjs my-app     # a git repository whose root page is an agent that builds the app with you
+npm create pagent my-app       # a git repository whose root page is an agent that builds the app with you
 cd my-app && npm install && npm run dev        # http://127.0.0.1:4870
 
 npx pagentjs serve ./some-app  # or serve any folder

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// npm create pagentjs <dir>: a new app is a git repository with one node, its root: a page where you talk with the
+// npm create pagent <dir>: a new app is a git repository with one node, its root: a page where you talk with the
 // root agent about what the app should become. It builds the rest (child folders = pages) with you.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
