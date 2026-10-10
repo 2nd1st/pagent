@@ -1,0 +1,13 @@
+node_modules/
+dist/
+playground/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# scratch scripts from probes and spikes
+.probe-*
+.spike-*
+dist-publish/

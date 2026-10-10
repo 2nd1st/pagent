@@ -1,0 +1,211 @@
+:root {
+  --pagent-bg: #f7f7f5;
+  --pagent-surface: #ffffff;
+  --pagent-text: #1d1d1b;
+  --pagent-muted: #77756f;
+  --pagent-border: #e3e1dc;
+  --pagent-accent: #3b5bdb;
+  --pagent-accent-soft: #e7ecfd;
+  --pagent-danger: #c92a2a;
+  --pagent-radius: 10px;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pagent-bg: #161615;
+    --pagent-surface: #1f1f1d;
+    --pagent-text: #ecebe8;
+    --pagent-muted: #9a978f;
+    --pagent-border: #34332f;
+    --pagent-accent: #8ea4ff;
+    --pagent-accent-soft: #252c47;
+    --pagent-danger: #ff8787;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--pagent-bg);
+  color: var(--pagent-text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+}
+a { color: var(--pagent-accent); }
+button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--pagent-border);
+  border-radius: 8px;
+  background: var(--pagent-surface);
+  color: var(--pagent-text);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--pagent-accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+
+.ha-bar {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px;
+  background: var(--pagent-surface);
+  border-bottom: 1px solid var(--pagent-border);
+}
+.ha-brand { font-weight: 600; }
+.ha-path { color: var(--pagent-muted); }
+.ha-spacer { flex: 1; }
+.ha-status { color: var(--pagent-muted); font-size: 12px; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ha-seg { display: inline-flex; }
+.ha-seg button { border-radius: 0; }
+.ha-seg button:first-child { border-radius: 8px 0 0 8px; }
+.ha-seg button:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
+.ha-seg button[aria-pressed="true"] { background: var(--pagent-accent-soft); border-color: var(--pagent-accent); }
+.ha-main { padding: 16px; }
+.ha-muted { color: var(--pagent-muted); }
+.ha-empty { padding: 48px; text-align: center; color: var(--pagent-muted); }
+
+.ha-error { color: var(--pagent-danger); border: 1px solid var(--pagent-danger); border-radius: 8px; padding: 8px; margin: 4px 0; white-space: pre-wrap; }
+.ha-error pre { margin: 4px 0 0; white-space: pre-wrap; }
+
+/* <Chat> */
+.ha-chat {
+  display: flex; flex-direction: column;
+  min-height: 0; height: 100%;
+  background: var(--pagent-surface);
+  border: 1px solid var(--pagent-border);
+  border-radius: var(--pagent-radius);
+  overflow: hidden;
+}
+.ha-chat-head { padding: 8px 12px; border-bottom: 1px solid var(--pagent-border); font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.ha-chat-head .ha-muted { font-weight: 400; font-size: 12px; }
+.ha-dot { width: 8px; height: 8px; border-radius: 50%; background: #2f9e44; display: inline-block; }
+.ha-dot[data-busy="true"] { background: #f59f00; animation: ha-pulse 1s infinite; }
+@keyframes ha-pulse { 50% { opacity: 0.3; } }
+.ha-chat-log { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ha-turn { max-width: 92%; }
+.ha-turn.ha-user { align-self: flex-end; background: var(--pagent-accent-soft); padding: 6px 10px; border-radius: 10px; }
+.ha-turn.ha-assistant { align-self: flex-start; }
+.ha-text { word-break: break-word; }
+.ha-text > :first-child { margin-top: 0; }
+.ha-text > :last-child { margin-bottom: 0; }
+.ha-text p, .ha-text ul, .ha-text ol, .ha-text pre { margin: 0 0 8px; }
+.ha-text ul, .ha-text ol { padding-left: 20px; }
+.ha-text code { background: var(--pagent-bg); border: 1px solid var(--pagent-border); border-radius: 4px; padding: 0 3px; }
+.ha-text pre { background: var(--pagent-bg); border: 1px solid var(--pagent-border); border-radius: 6px; padding: 8px; overflow: auto; }
+.ha-text pre code { border: 0; padding: 0; }
+.ha-turn.ha-user .ha-text p { margin: 0; }
+.ha-reasoning { font-size: 12px; color: var(--pagent-muted); margin-bottom: 4px; }
+.ha-reasoning summary { cursor: pointer; }
+.ha-reasoning > div { white-space: pre-wrap; padding: 4px 0 0 12px; }
+.ha-origin { font-size: 11px; color: var(--pagent-muted); }
+.ha-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+.ha-tool { font-size: 11px; font-family: ui-monospace, monospace; color: var(--pagent-muted); border: 1px solid var(--pagent-border); border-radius: 4px; padding: 0 4px; }
+.ha-tool[data-state="running"] { color: var(--pagent-accent); border-color: var(--pagent-accent); }
+.ha-tool[data-state="error"] { color: var(--pagent-danger); border-color: var(--pagent-danger); }
+.ha-chat-input { display: flex; gap: 8px; padding: 8px; border-top: 1px solid var(--pagent-border); }
+.ha-chat-input textarea {
+  flex: 1; resize: none; font: inherit; padding: 6px 8px;
+  border: 1px solid var(--pagent-border); border-radius: 8px;
+  background: var(--pagent-bg); color: var(--pagent-text);
+}
+
+/* Agent surfaces: the agent renders nothing by default; these are opt-in. */
+.ha-icon { border: 0; background: transparent; padding: 2px 6px; font-size: 16px; line-height: 1; color: var(--pagent-muted); cursor: pointer; }
+.ha-icon:hover { color: var(--pagent-text); }
+.ha-spacer { flex: 1; }
+.ha-badge { background: var(--pagent-danger); color: #fff; border-radius: 999px; font-size: 11px; padding: 0 6px; }
+
+/* <AgentFab> */
+.ha-fab {
+  position: fixed; right: 20px; bottom: 20px; z-index: 40;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-radius: 999px;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  max-width: 260px;
+}
+.ha-fab[data-asking="true"] { border-color: var(--pagent-danger); }
+.ha-fab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+
+/* <AgentBar> */
+.ha-bar-dock {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 39;
+  width: min(640px, calc(100vw - 32px));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ha-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px 6px 14px; border-radius: 14px;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.14);
+}
+.ha-bubble {
+  position: relative; align-self: stretch;
+  padding: 10px 32px 10px 14px; border-radius: 14px;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.10);
+  max-height: 40vh; overflow: auto;
+}
+.ha-bubble > .ha-icon { position: absolute; top: 6px; right: 6px; }
+
+/* Composer (bar + console) */
+.ha-composer { position: relative; flex: 1; display: flex; gap: 8px; align-items: center; }
+.ha-composer textarea {
+  flex: 1; resize: none; font: inherit; padding: 6px 8px; min-height: 34px; max-height: 160px;
+  border: 0; outline: none; background: transparent; color: var(--pagent-text);
+}
+.ha-console-input .ha-composer textarea { border: 1px solid var(--pagent-border); border-radius: 10px; background: var(--pagent-bg); }
+.ha-commands {
+  position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 2;
+  display: flex; flex-direction: column; min-width: 220px; max-height: 260px; overflow: auto;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: 10px; padding: 4px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.14);
+}
+.ha-commands button { border: 0; text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
+.ha-commands button[data-active="true"] { background: var(--pagent-accent-soft); }
+
+/* <AgentConsole> */
+.ha-console {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; flex-direction: column;
+  background: var(--pagent-bg);
+}
+.ha-console-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--pagent-border); background: var(--pagent-surface); }
+.ha-console-log { flex: 1; overflow: auto; padding: 16px max(16px, calc(50vw - 420px)); display: flex; flex-direction: column; gap: 12px; }
+.ha-console-input { padding: 12px max(16px, calc(50vw - 420px)) 16px; border-top: 1px solid var(--pagent-border); background: var(--pagent-surface); }
+.ha-console .ha-turn { max-width: 100%; }
+.ha-toolcard { border: 1px solid var(--pagent-border); border-radius: 8px; background: var(--pagent-surface); margin: 4px 0; }
+.ha-toolcard summary { display: flex; gap: 8px; align-items: center; padding: 4px 8px; cursor: pointer; list-style: none; }
+.ha-toolcard-brief { color: var(--pagent-muted); font-family: ui-monospace, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ha-toolcard pre { margin: 0; padding: 8px; border-top: 1px solid var(--pagent-border); max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.ha-toolcard-out { color: var(--pagent-muted); }
+
+/* <QuestionCard> */
+.ha-question { border: 1px solid var(--pagent-accent); background: var(--pagent-accent-soft); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.ha-question-text { font-weight: 600; }
+.ha-question-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.ha-question input { width: 100%; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--pagent-border); background: var(--pagent-surface); color: var(--pagent-text); }
+.ha-console-inline { position: relative; inset: auto; z-index: auto; height: calc(100vh - 110px); border: 1px solid var(--pagent-border); border-radius: 12px; overflow: hidden; }
+.ha-console-inline .ha-console-log, .ha-console-inline .ha-console-input { padding-left: 16px; padding-right: 16px; }
+.ha-question-detail { margin: 0; padding: 6px 8px; background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: 6px; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.ha-resume { font-size: 12px; padding: 2px 8px; color: var(--pagent-muted); }
+/* A node's wrapper takes no part in layout, so height: 100% chains through nested nodes. */
+.ha-node { display: contents; }
+
+/* The agent's native CLI */
+.ha-terminal { background: #14161a; border-radius: 10px; padding: 8px; min-height: 360px; height: 100%; box-sizing: border-box; overflow: hidden; }
+.ha-terminal { display: flex; position: relative; }
+.ha-terminal-screen { flex: 1; min-width: 0; min-height: 0; }
+.ha-terminal-conflict {
+  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 14px;
+  padding: 24px; max-width: 560px; margin: auto; color: #e4e4e4; font-size: 14px; line-height: 1.5;
+}
+.ha-terminal-conflict p { margin: 0; }
+.ha-terminal-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.ha-terminal-choices .ha-quiet { background: transparent; color: #b8b6b0; }
+
+/* Permission requests from any agent, on any page */
+.ha-permissions { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; width: min(380px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
+.ha-permission { background: var(--pagent-surface); border-radius: 12px; box-shadow: 0 6px 24px rgb(0 0 0 / 0.18); }
+.ha-permission-from { font-size: 12px; color: var(--pagent-muted); padding: 8px 12px 0; font-family: ui-monospace, monospace; }
+.ha-permission .ha-question { border-radius: 0 0 12px 12px; border-width: 0; border-top-width: 1px; margin-top: 6px; }

@@ -1,0 +1,22 @@
+{
+  "name": "@pagent/core",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pagent": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@babel/parser": "^8.0.7",
+    "@modelcontextprotocol/ext-apps": "^2.0.3",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ai": "^7.0.136",
+    "esbuild": "^0.28.2",
+    "node-pty": "^1.1.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
+  }
+}

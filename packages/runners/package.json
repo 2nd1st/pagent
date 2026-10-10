@@ -1,0 +1,9 @@
+{
+  "name": "@pagent/runners",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ai": "^7.0.136"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "create-pagent",
+  "version": "0.0.1",
+  "description": "Start a pagent app: npm create pagent my-app",
+  "license": "MIT",
+  "author": "LEOYUN <leo@secondfirst.ai>",
+  "repository": { "type": "git", "url": "git+https://github.com/2nd1st/pagent.git", "directory": "packages/create-pagent" },
+  "homepage": "https://github.com/2nd1st/pagent",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "bin": { "create-pagent": "index.js" },
+  "files": ["index.js"]
+}
