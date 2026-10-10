@@ -1,4 +1,5 @@
-// node scripts/build.ts: the publishable `pagent` package in dist-publish/pagent.
+// node scripts/build.ts: the publishable package in dist-publish/pagent. On npm it is `pagentjs` (npm refuses
+// `pagent` as too close to an existing name); its command is `pagent`, and apps install it as "pagent": "npm:pagentjs".
 //   dist/core, dist/runners  compiled JavaScript (Node does not strip types inside node_modules)
 //   dist/bridge              type declarations for `import … from "pagent"` in node code (the host provides it)
 //   shell/                   the browser shell, prebuilt; plus the MCP App runtime and the shell's styles
@@ -63,7 +64,7 @@ cpSync(join(repo, "skill"), join(out, "skill"), { recursive: true });
 const core = JSON.parse(readFileSync(join(repo, "packages/core/package.json"), "utf8"));
 const bridge = JSON.parse(readFileSync(join(repo, "packages/bridge/package.json"), "utf8"));
 writeFileSync(join(out, "package.json"), JSON.stringify({
-  name: "pagent",
+  name: "pagentjs",
   version,
   description: "Pages with agents behind them: a folder is a node — its page, its agent, its data.",
   license: "MIT",
@@ -81,4 +82,4 @@ writeFileSync(join(out, "package.json"), JSON.stringify({
 }, null, 2) + "\n");
 cpSync(join(repo, "LICENSE"), join(out, "LICENSE"));
 cpSync(join(repo, "README.md"), join(out, "README.md"));
-console.log(`built pagent@${version} in ${out}`);
+console.log(`built pagentjs@${version} in ${out}`);

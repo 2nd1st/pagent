@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// npm create pagent <dir>: a new app is a git repository with one node, its root: a page where you talk with the
+// npm create pagentjs <dir>: a new app is a git repository with one node, its root: a page where you talk with the
 // root agent about what the app should become. It builds the rest (child folders = pages) with you.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
@@ -41,7 +41,7 @@ The agent of the root node (/) is where the user starts. Talk with them about wh
 then build it with them: one child folder per page, each with the data it needs and, when it should act on its
 own, its own agent. Keep the root page (page.tsx at the top) a short welcome plus links to the pages that exist.
 `,
-  "package.json": JSON.stringify({ name: basename(dir), private: true, type: "module", scripts: { dev: "pagent serve ." }, devDependencies: { pagent: "latest", "@types/react": "^19" } }, null, 2) + "\n",
+  "package.json": JSON.stringify({ name: basename(dir), private: true, type: "module", scripts: { dev: "pagent serve ." }, devDependencies: { pagent: "npm:pagentjs@latest", "@types/react": "^19" } }, null, 2) + "\n",
   ".gitignore": "node_modules/\n.state/\n.env\n",
 };
 for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);

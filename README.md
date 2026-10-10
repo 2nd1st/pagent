@@ -29,8 +29,14 @@ export default function Board() {
 ```
 
 ```sh
-npx pagent serve ./my-app      # http://127.0.0.1:4870
+npm create pagentjs my-app     # a git repository whose root page is an agent that builds the app with you
+cd my-app && npm install && npm run dev        # http://127.0.0.1:4870
+
+npx pagentjs serve ./some-app  # or serve any folder
 ```
+
+On npm the package is `pagentjs` (`pagent` was refused as too close to an existing name); its command is
+`pagent`, and apps depend on it as `"pagent": "npm:pagentjs"`, so node code imports from `"pagent"`.
 
 What it does today:
 
