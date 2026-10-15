@@ -1,211 +1,628 @@
+/* pagent's shell: a neutral frame. Every visual decision is a --pagent-* token below, so a look (a "taste" layer: an
+   onboarding preset, an app's own palette) is token overrides on :root, nothing else. Pages use the same tokens
+   (skill: "Style"); the first ten names are the original ones and stay. */
 :root {
-  --pagent-bg: #f7f7f5;
+  /* surfaces: the page; the rail recedes behind it; cards, inputs and floating layers sit on top */
+  --pagent-bg: #fafaf9;
+  --pagent-chrome: #f4f4f2;
   --pagent-surface: #ffffff;
-  --pagent-text: #1d1d1b;
-  --pagent-muted: #77756f;
-  --pagent-border: #e3e1dc;
-  --pagent-accent: #3b5bdb;
-  --pagent-accent-soft: #e7ecfd;
-  --pagent-danger: #c92a2a;
-  --pagent-radius: 10px;
+  --pagent-surface-2: #f1f1ef;          /* hover, selected, code, the user's bubble */
+  --pagent-border: #e7e6e2;             /* hairlines between things */
+  --pagent-border-strong: #d6d4ce;      /* the edge of a control (input, button) */
+  /* ink */
+  --pagent-text: #1b1b19;
+  --pagent-muted: #6b6a65;
+  --pagent-faint: #8a8881;              /* meta: times, placeholders, separators (never what must be read) */
+  /* one accent: links, the primary button, "said something new" */
+  --pagent-accent: #3e63dd;
+  --pagent-accent-soft: #edf1fd;
+  --pagent-on-accent: #ffffff;          /* text on an accent fill */
+  /* agent states (SPEC 3.7): working amber, waiting red, new = accent, idle a ring */
+  --pagent-working: #e08a00;
+  --pagent-working-text: #9a5800;
+  --pagent-waiting: #e5484d;
+  --pagent-waiting-text: #c62a2f;
+  --pagent-danger: #ce2c31;
+  /* shape, depth, motion */
+  --pagent-radius: 10px;                /* cards, the terminal */
+  --pagent-radius-sm: 6px;              /* controls: buttons, inputs, rail items */
+  --pagent-radius-lg: 12px;             /* a card in a reply, a question */
+  --pagent-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.04);                                     /* resting on the page */
+  --pagent-shadow-md: 0 1px 2px rgb(0 0 0 / 0.04), 0 6px 20px -10px rgb(0 0 0 / 0.12);    /* lifted a little: the composer */
+  --pagent-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 10px 28px -6px rgb(0 0 0 / 0.12);   /* floating layers only */
+  --pagent-ring: color-mix(in srgb, var(--pagent-accent) 40%, transparent);           /* focus */
+  --pagent-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --pagent-scrim: rgb(0 0 0 / 0.28);    /* behind a drawer */
+  /* type: the platform's Latin face and its best CJK face; mono falls back to CJK too */
+  --pagent-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  --pagent-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "PingFang SC", "Microsoft YaHei", monospace;
+  --pagent-message-size: 15px;          /* conversation text (16px on phones) */
+  --pagent-message-leading: 1.7;
+  /* layout */
+  --pagent-reading-width: 720px;        /* a conversation's column: about 44 CJK characters */
+  --pagent-rail-width: 248px;
+  /* the agent's terminal: dark in both themes */
+  --pagent-terminal-bg: #161615;
+  --pagent-terminal-fg: #e6e4df;
   color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --pagent-bg: #161615;
-    --pagent-surface: #1f1f1d;
+  :root:not([data-theme="light"]) {
+    --pagent-bg: #151514;
+    --pagent-chrome: #111110;
+    --pagent-surface: #1c1c1a;
+    --pagent-surface-2: #262624;
+    --pagent-border: #2c2b28;
+    --pagent-border-strong: #3b3a36;
     --pagent-text: #ecebe8;
-    --pagent-muted: #9a978f;
-    --pagent-border: #34332f;
-    --pagent-accent: #8ea4ff;
-    --pagent-accent-soft: #252c47;
-    --pagent-danger: #ff8787;
+    --pagent-muted: #a3a099;
+    --pagent-faint: #74716b;
+    --pagent-accent: #6380ea;
+    --pagent-accent-soft: #212741;
+    --pagent-on-accent: #ffffff;
+    --pagent-working: #f0a43a;
+    --pagent-working-text: #e9a23b;
+    --pagent-waiting: #f2615f;
+    --pagent-waiting-text: #f2807c;
+    --pagent-danger: #f2807c;
+    --pagent-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+    --pagent-shadow-md: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px -10px rgb(0 0 0 / 0.5);
+    --pagent-shadow: 0 0 0 1px rgb(255 255 255 / 0.06), 0 12px 32px -6px rgb(0 0 0 / 0.6);
+    --pagent-terminal-bg: #0f0f0e;
   }
 }
+/* The same dark values, chosen explicitly (no switch in the UI yet; a page or a preset can set data-theme). */
+:root[data-theme="dark"] {
+  --pagent-bg: #151514; --pagent-chrome: #111110; --pagent-surface: #1c1c1a; --pagent-surface-2: #262624;
+  --pagent-border: #2c2b28; --pagent-border-strong: #3b3a36; --pagent-text: #ecebe8; --pagent-muted: #a3a099;
+  --pagent-faint: #74716b; --pagent-accent: #6380ea; --pagent-accent-soft: #212741; --pagent-on-accent: #ffffff;
+  --pagent-working: #f0a43a; --pagent-working-text: #e9a23b; --pagent-waiting: #f2615f; --pagent-waiting-text: #f2807c;
+  --pagent-danger: #f2807c; --pagent-shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --pagent-shadow-md: 0 1px 2px rgb(0 0 0 / 0.3), 0 6px 20px -10px rgb(0 0 0 / 0.5);
+  --pagent-shadow: 0 0 0 1px rgb(255 255 255 / 0.06), 0 12px 32px -6px rgb(0 0 0 / 0.6);
+  --pagent-terminal-bg: #0f0f0e; color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
 
-* { box-sizing: border-box; }
+/* ---------------------------------------------------------------- base
+   Element defaults are in :where() (no specificity): a page's own class or inline style always wins over them. */
+* { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: var(--pagent-border-strong) transparent; }
 body {
   margin: 0;
   background: var(--pagent-bg);
   color: var(--pagent-text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  font: 14px/1.6 var(--pagent-font);
+  -webkit-font-smoothing: antialiased;
+  text-autospace: normal; /* a hair of space between 中文 and Latin, where supported */
 }
-a { color: var(--pagent-accent); }
-button {
-  font: inherit;
+::selection { background: color-mix(in srgb, var(--pagent-accent) 24%, transparent); }
+:where(a) { color: var(--pagent-accent); text-underline-offset: 2px; text-decoration-thickness: 1px; }
+:focus-visible { outline: 2px solid var(--pagent-ring); outline-offset: 1px; }
+:where(strong, b) { font-weight: 600; }
+
+/* Buttons: a plain <button> is the secondary one; .pagent-primary (at most one in a group) and .pagent-ghost the others. */
+:where(button) {
+  font: inherit; font-size: 13px; font-weight: 500; line-height: 18px;
   padding: 5px 12px;
-  border: 1px solid var(--pagent-border);
-  border-radius: 8px;
+  border: 1px solid var(--pagent-border-strong);
+  border-radius: var(--pagent-radius-sm);
   background: var(--pagent-surface);
   color: var(--pagent-text);
   cursor: pointer;
+  transition: background-color 120ms var(--pagent-ease), border-color 120ms var(--pagent-ease), color 120ms var(--pagent-ease);
 }
-button:hover:not(:disabled) { border-color: var(--pagent-accent); }
-button:disabled { opacity: 0.5; cursor: default; }
-code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
-
-.ha-bar {
-  position: sticky; top: 0; z-index: 10;
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 16px;
+:where(button:hover:not(:disabled)) { background: var(--pagent-surface-2); }
+:where(button:disabled) { opacity: 0.45; cursor: default; }
+button.pagent-primary { background: var(--pagent-accent); border-color: transparent; color: var(--pagent-on-accent); }
+button.pagent-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--pagent-accent) 88%, var(--pagent-text)); }
+button.pagent-ghost { background: transparent; border-color: transparent; color: var(--pagent-muted); }
+button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); color: var(--pagent-text); }
+:where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="hidden"], [type="button"], [type="submit"], [type="reset"], [type="image"]), select, textarea) {
+  font: inherit; color: var(--pagent-text);
   background: var(--pagent-surface);
+  border: 1px solid var(--pagent-border-strong);
+  border-radius: var(--pagent-radius-sm);
+  padding: 6px 10px;
+}
+:where(input, textarea)::placeholder { color: var(--pagent-faint); }
+:where(input[type="checkbox"], input[type="radio"], input[type="range"], progress) { accent-color: var(--pagent-accent); }
+:where(code, pre, kbd, samp) { font-family: var(--pagent-mono); font-size: 12.5px; }
+:where(table) { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+:where(th) { font-weight: 500; color: var(--pagent-muted); }
+@media (prefers-reduced-motion: reduce) { *, ::before, ::after { animation: none !important; transition: none !important; } }
+@media (max-width: 760px) {
+  /* iOS zooms into a field whose text is smaller than 16px */
+  :where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"]), select, textarea) { font-size: 16px; }
+}
+
+/* ---------------------------------------------------------------- navigation
+   A rail with the app's pages (by title, with their agents' status), a top bar with the trail of titles. The top bar
+   is 44px and the main's vertical padding 16px, so a page that fills the window sizes itself calc(100vh - 76px). */
+.pagent-app { display: flex; min-height: 100vh; }
+.pagent-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pagent-top {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 2px;
+  height: 44px; padding: 0 10px;
+  background: var(--pagent-bg);
   border-bottom: 1px solid var(--pagent-border);
 }
-.ha-brand { font-weight: 600; }
-.ha-path { color: var(--pagent-muted); }
-.ha-spacer { flex: 1; }
-.ha-status { color: var(--pagent-muted); font-size: 12px; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ha-seg { display: inline-flex; }
-.ha-seg button { border-radius: 0; }
-.ha-seg button:first-child { border-radius: 8px 0 0 8px; }
-.ha-seg button:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
-.ha-seg button[aria-pressed="true"] { background: var(--pagent-accent-soft); border-color: var(--pagent-accent); }
-.ha-main { padding: 16px; }
-.ha-muted { color: var(--pagent-muted); }
-.ha-empty { padding: 48px; text-align: center; color: var(--pagent-muted); }
+.pagent-top .pagent-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border-radius: var(--pagent-radius-sm); }
+.pagent-top .pagent-icon[aria-pressed="true"] { color: var(--pagent-text); }
+.pagent-railbutton { position: relative; }
+.pagent-railbutton .pagent-navdot { position: absolute; top: 4px; right: 3px; box-shadow: 0 0 0 2px var(--pagent-bg); }
+.pagent-bell[data-on="true"] { color: var(--pagent-accent); }
+.pagent-bell[data-on="true"] svg path { fill: var(--pagent-accent-soft); }
+.pagent-crumbs { display: flex; align-items: center; min-width: 0; margin: 0 0 0 6px; padding: 0; list-style: none; font-size: 14px; }
+.pagent-crumbs li { display: flex; align-items: center; min-width: 0; white-space: nowrap; }
+.pagent-crumbs li + li::before { content: "/"; margin: 0 8px; color: var(--pagent-faint); opacity: 0.6; }
+.pagent-crumbs a { color: var(--pagent-muted); text-decoration: none; border-radius: 4px; }
+.pagent-crumbs a:hover { color: var(--pagent-text); }
+.pagent-crumbs [aria-current="page"] { font-weight: 500; color: var(--pagent-text); overflow: hidden; text-overflow: ellipsis; }
+.pagent-crumb-dir { color: var(--pagent-faint); }
 
-.ha-error { color: var(--pagent-danger); border: 1px solid var(--pagent-danger); border-radius: 8px; padding: 8px; margin: 4px 0; white-space: pre-wrap; }
-.ha-error pre { margin: 4px 0 0; white-space: pre-wrap; }
-
-/* <Chat> */
-.ha-chat {
-  display: flex; flex-direction: column;
-  min-height: 0; height: 100%;
-  background: var(--pagent-surface);
-  border: 1px solid var(--pagent-border);
-  border-radius: var(--pagent-radius);
-  overflow: hidden;
+.pagent-rail {
+  position: sticky; top: 0; z-index: 20;
+  flex: none; width: var(--pagent-rail-width); height: 100vh; overflow: auto;
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 8px 8px 16px;
+  background: var(--pagent-chrome);
+  border-right: 1px solid var(--pagent-border);
 }
-.ha-chat-head { padding: 8px 12px; border-bottom: 1px solid var(--pagent-border); font-weight: 600; display: flex; gap: 6px; align-items: center; }
-.ha-chat-head .ha-muted { font-weight: 400; font-size: 12px; }
-.ha-dot { width: 8px; height: 8px; border-radius: 50%; background: #2f9e44; display: inline-block; }
-.ha-dot[data-busy="true"] { background: #f59f00; animation: ha-pulse 1s infinite; }
-@keyframes ha-pulse { 50% { opacity: 0.3; } }
-.ha-chat-log { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-.ha-turn { max-width: 92%; }
-.ha-turn.ha-user { align-self: flex-end; background: var(--pagent-accent-soft); padding: 6px 10px; border-radius: 10px; }
-.ha-turn.ha-assistant { align-self: flex-start; }
-.ha-text { word-break: break-word; }
-.ha-text > :first-child { margin-top: 0; }
-.ha-text > :last-child { margin-bottom: 0; }
-.ha-text p, .ha-text ul, .ha-text ol, .ha-text pre { margin: 0 0 8px; }
-.ha-text ul, .ha-text ol { padding-left: 20px; }
-.ha-text code { background: var(--pagent-bg); border: 1px solid var(--pagent-border); border-radius: 4px; padding: 0 3px; }
-.ha-text pre { background: var(--pagent-bg); border: 1px solid var(--pagent-border); border-radius: 6px; padding: 8px; overflow: auto; }
-.ha-text pre code { border: 0; padding: 0; }
-.ha-turn.ha-user .ha-text p { margin: 0; }
-.ha-reasoning { font-size: 12px; color: var(--pagent-muted); margin-bottom: 4px; }
-.ha-reasoning summary { cursor: pointer; }
-.ha-reasoning > div { white-space: pre-wrap; padding: 4px 0 0 12px; }
-.ha-origin { font-size: 11px; color: var(--pagent-muted); }
-.ha-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-.ha-tool { font-size: 11px; font-family: ui-monospace, monospace; color: var(--pagent-muted); border: 1px solid var(--pagent-border); border-radius: 4px; padding: 0 4px; }
-.ha-tool[data-state="running"] { color: var(--pagent-accent); border-color: var(--pagent-accent); }
-.ha-tool[data-state="error"] { color: var(--pagent-danger); border-color: var(--pagent-danger); }
-.ha-chat-input { display: flex; gap: 8px; padding: 8px; border-top: 1px solid var(--pagent-border); }
-.ha-chat-input textarea {
-  flex: 1; resize: none; font: inherit; padding: 6px 8px;
-  border: 1px solid var(--pagent-border); border-radius: 8px;
-  background: var(--pagent-bg); color: var(--pagent-text);
+.pagent-app[data-rail="over"] .pagent-rail {
+  position: fixed; left: 0; width: min(300px, 86vw);
+  background: var(--pagent-surface); box-shadow: var(--pagent-shadow); animation: pagent-slide 200ms var(--pagent-ease);
+}
+.pagent-scrim { position: fixed; inset: 0; z-index: 19; background: var(--pagent-scrim); animation: pagent-fade 200ms var(--pagent-ease); }
+@keyframes pagent-slide { from { transform: translateX(-16px); opacity: 0; } }
+@keyframes pagent-fade { from { opacity: 0; } }
+.pagent-raillist { display: flex; flex-direction: column; gap: 1px; margin-top: 8px; }
+/* A page: dot, title, when it last talked; then what it is doing or waits on; then the last thing it said. The text
+   lines start under the title, so the dots make one column to scan. */
+.pagent-railitem { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: var(--pagent-radius-sm); color: var(--pagent-text); text-decoration: none; transition: background-color 120ms var(--pagent-ease); }
+.pagent-railitem:hover { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); }
+.pagent-railitem[aria-current="page"] { background: color-mix(in srgb, var(--pagent-text) 8%, transparent); }
+.pagent-railhome { min-height: 36px; justify-content: center; }
+.pagent-railhome .pagent-railtitle { font-weight: 600; }
+.pagent-railrow { display: flex; align-items: center; gap: 8px; min-width: 0; line-height: 20px; }
+.pagent-railtitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.pagent-railitem[data-unread] .pagent-railtitle { font-weight: 600; }
+.pagent-railtime { flex: none; font-size: 11.5px; color: var(--pagent-faint); font-variant-numeric: tabular-nums; }
+.pagent-railnote, .pagent-railsaid { margin-left: 16px; font-size: 12.5px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pagent-railnote[data-state="working"] { color: var(--pagent-working-text); }
+.pagent-railnote[data-state="waiting"] { color: var(--pagent-waiting-text); }
+.pagent-railsaid { color: var(--pagent-muted); }
+.pagent-railsaid[data-asks] { color: var(--pagent-text); }
+.pagent-raillabel { padding: 14px 8px 4px; font-size: 12px; font-weight: 500; color: var(--pagent-faint); }
+
+/* An agent's status, the same everywhere (rail, console, chat, fab): working breathes, waiting for the user stands out,
+   said something new is filled, idle is a quiet ring. A page without agents keeps the dot's room, so titles line up. */
+.pagent-navdot, .pagent-dot { flex: none; display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.pagent-navdot[data-state="none"] { visibility: hidden; }
+.pagent-navdot[data-state="idle"], .pagent-dot { box-shadow: inset 0 0 0 1.5px var(--pagent-faint); }
+.pagent-navdot[data-state="unread"] { background: var(--pagent-accent); }
+.pagent-navdot[data-state="working"], .pagent-dot[data-busy="true"] { background: var(--pagent-working); box-shadow: none; animation: pagent-breathe 1.6s ease-in-out infinite; }
+.pagent-navdot[data-state="waiting"], .pagent-dot[data-asking="true"] { background: var(--pagent-waiting); box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--pagent-waiting) 18%, transparent); animation: none; }
+@keyframes pagent-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--pagent-working) 45%, transparent); }
+  50% { box-shadow: 0 0 0 4px transparent; }
 }
 
-/* Agent surfaces: the agent renders nothing by default; these are opt-in. */
-.ha-icon { border: 0; background: transparent; padding: 2px 6px; font-size: 16px; line-height: 1; color: var(--pagent-muted); cursor: pointer; }
-.ha-icon:hover { color: var(--pagent-text); }
-.ha-spacer { flex: 1; }
-.ha-badge { background: var(--pagent-danger); color: #fff; border-radius: 999px; font-size: 11px; padding: 0 6px; }
+.pagent-spacer { flex: 1; }
+.pagent-main { padding: 16px 24px; }
+.pagent-muted { color: var(--pagent-muted); }
+.pagent-empty { padding: 72px 24px; text-align: center; color: var(--pagent-muted); font-size: 14px; }
 
-/* <AgentFab> */
-.ha-fab {
+.pagent-error {
+  color: var(--pagent-danger); background: color-mix(in srgb, var(--pagent-danger) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pagent-danger) 30%, transparent); border-radius: var(--pagent-radius-sm);
+  padding: 10px 12px; margin: 4px 0; white-space: pre-wrap; font-size: 13px;
+}
+.pagent-error pre { margin: 6px 0 0; white-space: pre-wrap; }
+
+/* Icon buttons (the top bar, a console's head, a dismiss ×) */
+.pagent-icon { border: 0; background: transparent; padding: 2px 6px; font-size: 16px; line-height: 1; color: var(--pagent-muted); cursor: pointer; border-radius: var(--pagent-radius-sm); }
+.pagent-icon:hover:not(:disabled) { color: var(--pagent-text); background: var(--pagent-surface-2); }
+@media (max-width: 760px) {
+  .pagent-main { padding: 16px; }
+}
+
+/* ---------------------------------------------------------------- conversations
+   One reading column; text is never boxed, except what the user sent and what is a card. */
+
+/* <Chat>: a compact conversation, framed, for a page's side */
+.pagent-chat {
+  display: flex; flex-direction: column; min-height: 0; height: 100%;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius); overflow: hidden;
+}
+.pagent-chat-head { padding: 8px 12px; border-bottom: 1px solid var(--pagent-border); font-weight: 600; font-size: 13px; display: flex; gap: 8px; align-items: center; }
+.pagent-chat-head .pagent-muted { font-weight: 400; font-size: 12px; }
+.pagent-chat-log { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.pagent-chat-input { display: flex; gap: 8px; align-items: flex-end; padding: 10px; border-top: 1px solid var(--pagent-border); }
+.pagent-chat-input textarea { flex: 1; resize: none; }
+
+/* A turn: the user's in a neutral bubble on the right, the agent's as plain text across the column */
+.pagent-turn { max-width: 100%; min-width: 0; }
+.pagent-turn.pagent-user {
+  align-self: flex-end; max-width: 80%;
+  background: var(--pagent-surface-2); padding: 8px 14px; border-radius: calc(var(--pagent-radius-lg) + 4px);
+}
+.pagent-turn.pagent-assistant { align-self: stretch; }
+.pagent-text { word-break: break-word; font-size: var(--pagent-message-size); line-height: var(--pagent-message-leading); }
+.pagent-text > :first-child { margin-top: 0; }
+.pagent-text > :last-child { margin-bottom: 0; }
+.pagent-text p, .pagent-text ul, .pagent-text ol, .pagent-text pre, .pagent-text table, .pagent-text blockquote { margin: 0 0 10px; }
+.pagent-text ul, .pagent-text ol { padding-left: 22px; }
+.pagent-text li + li { margin-top: 2px; }
+.pagent-text li::marker { color: var(--pagent-faint); }
+.pagent-text h1, .pagent-text h2, .pagent-text h3, .pagent-text h4, .pagent-text h5, .pagent-text h6 { font-size: 16px; font-weight: 600; line-height: 1.45; margin: 18px 0 6px; }
+.pagent-text code { font-size: 0.86em; background: var(--pagent-surface-2); border-radius: 4px; padding: 1px 5px; }
+.pagent-text pre { background: var(--pagent-surface-2); border-radius: 8px; padding: 10px 12px; overflow: auto; font-size: 12.5px; line-height: 1.55; }
+.pagent-text pre code { background: none; padding: 0; font-size: inherit; }
+.pagent-text blockquote { padding-left: 12px; border-left: 2px solid var(--pagent-border-strong); color: var(--pagent-muted); }
+.pagent-text table { display: block; overflow-x: auto; font-size: 14px; }
+.pagent-text th, .pagent-text td { padding: 4px 10px; border-bottom: 1px solid var(--pagent-border); text-align: left; }
+.pagent-text hr { border: 0; border-top: 1px solid var(--pagent-border); margin: 16px 0; }
+.pagent-turn.pagent-user .pagent-text p { margin: 0; }
+.pagent-reasoning { font-size: 13px; color: var(--pagent-muted); margin-bottom: 6px; }
+.pagent-reasoning summary { cursor: pointer; }
+.pagent-reasoning > div { white-space: pre-wrap; padding: 4px 0 0 12px; border-left: 1px solid var(--pagent-border); margin-left: 5px; }
+.pagent-origin { font-size: 12px; color: var(--pagent-faint); margin-bottom: 2px; }
+/* Turns between agents (and the engine's notices), folded into one quiet line: who with, how many, a glimpse */
+.pagent-chatter { align-self: stretch; min-width: 0; }
+.pagent-chatter > summary {
+  display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; list-style: none;
+  font-size: 13px; color: var(--pagent-muted); padding: 3px 8px 3px 4px; margin-left: -4px; border-radius: var(--pagent-radius-sm);
+  transition: background-color 120ms var(--pagent-ease), color 120ms var(--pagent-ease);
+}
+.pagent-chatter > summary::-webkit-details-marker { display: none; }
+.pagent-chatter > summary:hover { background: var(--pagent-surface-2); color: var(--pagent-text); }
+.pagent-chevron { flex: none; opacity: 0.7; transition: transform 150ms var(--pagent-ease); }
+details[open] > summary > .pagent-chevron { transform: rotate(90deg); }
+.pagent-chatter-who { flex: none; font-weight: 500; color: var(--pagent-text); }
+.pagent-chatter-count { flex: none; color: var(--pagent-faint); }
+.pagent-chatter-count::before, .pagent-chatter-glimpse::before { content: "·"; margin-right: 8px; color: var(--pagent-faint); }
+.pagent-chatter-glimpse { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pagent-chatter-body {
+  display: flex; flex-direction: column; gap: 14px; margin: 8px 0 4px 7px; padding-left: 14px; border-left: 1px solid var(--pagent-border);
+}
+/* Where the session's context was compacted: a thin line across; open, the summary it goes on from */
+.pagent-compaction { align-self: stretch; min-width: 0; }
+.pagent-compaction-line {
+  display: flex; align-items: center; justify-content: center; gap: 6px; list-style: none;
+  font-size: 12px; color: var(--pagent-faint);
+}
+.pagent-compaction-line::before, .pagent-compaction-line::after { content: ""; flex: 1; height: 1px; background: var(--pagent-border); }
+.pagent-compaction-line::before { margin-right: 6px; }
+.pagent-compaction-line::after { margin-left: 6px; }
+summary.pagent-compaction-line { cursor: pointer; }
+summary.pagent-compaction-line::-webkit-details-marker { display: none; }
+summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
+.pagent-compaction-more { text-decoration: underline; text-decoration-color: var(--pagent-border-strong); text-underline-offset: 3px; }
+.pagent-compaction-body {
+  margin-top: 10px; padding: 12px 14px; max-height: 420px; overflow: auto; border-radius: var(--pagent-radius);
+  background: var(--pagent-surface-2); font-size: 13.5px; line-height: 1.6; color: var(--pagent-muted);
+}
+/* Compact tool calls (<Chat>, <AgentBar>): names in a row; the running one breathes, a failed one is red */
+.pagent-tools { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 6px; }
+.pagent-tool { font-size: 12.5px; font-weight: 500; color: var(--pagent-text); display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.pagent-tool[data-state="running"]::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--pagent-working); animation: pagent-breathe 1.6s ease-in-out infinite; }
+.pagent-tool[data-state="error"] { color: var(--pagent-danger); }
+
+/* Steps: the work between two pieces of text, folded to one quiet line */
+.pagent-steps { margin: 0; }
+.pagent-steps > summary {
+  display: inline-flex; gap: 6px; align-items: center; max-width: 100%; cursor: pointer; list-style: none;
+  font-size: 13px; color: var(--pagent-muted); padding: 2px 8px 2px 4px; margin-left: -4px; border-radius: var(--pagent-radius-sm);
+  transition: background-color 120ms var(--pagent-ease), color 120ms var(--pagent-ease);
+}
+.pagent-steps > summary::-webkit-details-marker { display: none; }
+.pagent-steps > summary:hover { background: var(--pagent-surface-2); color: var(--pagent-text); }
+.pagent-steps > summary::before {
+  content: ""; width: 14px; height: 14px; flex: none; background: currentColor; opacity: 0.7;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6 4l4 4-4 4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+          mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6 4l4 4-4 4' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: transform 150ms var(--pagent-ease);
+}
+.pagent-steps[open] > summary::before { transform: rotate(90deg); }
+.pagent-steps > summary .pagent-muted { color: inherit; }
+.pagent-steps .pagent-fail { color: var(--pagent-danger); }
+.pagent-steps[open] > summary { margin-bottom: 4px; }
+.pagent-steps[open] { margin-bottom: 6px; }
+.pagent-steps[open] > :not(summary) { margin-left: 10px; padding-left: 14px; border-left: 1px solid var(--pagent-border); }
+.pagent-steps + .pagent-text, .pagent-steps + .pagent-card { margin-top: 4px; }
+/* One call: its name and the telling argument; open, its output (and its input, when that says more) */
+.pagent-toolcard { margin: 0; padding-top: 2px; padding-bottom: 2px; }
+.pagent-toolcard summary { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; cursor: pointer; list-style: none; font-size: 13px; }
+.pagent-toolcard summary::-webkit-details-marker { display: none; }
+.pagent-toolcard summary:hover .pagent-toolcard-brief { color: var(--pagent-text); }
+.pagent-toolcard-brief { color: var(--pagent-muted); font-family: var(--pagent-mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pagent-toolcard pre {
+  margin: 2px 0 8px; padding: 8px 10px; border-radius: var(--pagent-radius-sm); background: var(--pagent-surface-2);
+  max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.55;
+}
+.pagent-toolcard pre::before { display: block; font-family: var(--pagent-font); font-size: 11px; font-weight: 500; color: var(--pagent-faint); margin-bottom: 4px; content: "Input"; }
+.pagent-toolcard pre.pagent-toolcard-out::before { content: "Output"; }
+.pagent-toolcard-out { color: var(--pagent-muted); }
+/* A sub-agent (its harness's own: Claude Code's Agent, Codex's spawn_agent): one quiet row, a dot for how it is doing,
+   its kind, what it was asked, and what it is doing now (or how it went); open, its steps under a thin line */
+.pagent-subagent { margin: 0; min-width: 0; }
+.pagent-subagent > summary {
+  display: flex; flex-direction: column; gap: 1px; min-width: 0; cursor: pointer; list-style: none;
+  font-size: 13px; padding: 3px 8px 3px 4px; margin-left: -4px; border-radius: var(--pagent-radius-sm);
+  transition: background-color 120ms var(--pagent-ease);
+}
+.pagent-subagent > summary::-webkit-details-marker { display: none; }
+.pagent-subagent > summary:hover { background: var(--pagent-surface-2); }
+.pagent-subagent-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.pagent-subagent-line::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%; flex: none; align-self: center;
+  background: var(--pagent-border-strong); margin: 0 2px 0 4px;
+}
+.pagent-subagent[data-state="running"] .pagent-subagent-line::before { background: var(--pagent-working); animation: pagent-breathe 1.6s ease-in-out infinite; }
+.pagent-subagent[data-state="error"] .pagent-subagent-line::before { background: var(--pagent-danger); }
+.pagent-subagent[data-state="stopped"] .pagent-subagent-line::before { background: transparent; box-shadow: inset 0 0 0 1px var(--pagent-faint); }
+.pagent-subagent-type { font-weight: 500; color: var(--pagent-text); flex: none; }
+.pagent-subagent-desc { color: var(--pagent-muted); min-width: 0; flex: 0 3 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pagent-subagent-meta { color: var(--pagent-faint); font-size: 12px; flex: 0 1 auto; min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pagent-subagent[data-state="running"] .pagent-subagent-meta { color: var(--pagent-working-text); }
+.pagent-subagent[data-state="error"] .pagent-subagent-meta { color: var(--pagent-danger); }
+.pagent-subagent-result { padding-left: 18px; color: var(--pagent-faint); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pagent-subagent[open] > summary .pagent-subagent-result { display: none; }
+.pagent-subagent[open] > summary { margin-bottom: 2px; }
+.pagent-subagent-body { margin: 0 0 6px 7px; padding-left: 14px; border-left: 1px solid var(--pagent-border); min-width: 0; }
+.pagent-subagent-body .pagent-text { font-size: 13.5px; line-height: 1.6; color: var(--pagent-muted); margin: 4px 0; }
+.pagent-subagent-body > .pagent-muted { font-size: 13px; padding: 3px 0; }
+.pagent-subagent-body .pagent-reasoning { margin: 2px 0 2px; }
+.pagent-subagent + .pagent-text, .pagent-subagent + .pagent-card { margin-top: 4px; }
+
+/* <AgentFab>, <AgentBar>: floating, so they cast the floating shadow */
+.pagent-badge { background: var(--pagent-waiting); color: var(--pagent-on-accent); border-radius: 999px; font-size: 11px; font-weight: 600; padding: 0 6px; line-height: 16px; }
+.pagent-fab {
   position: fixed; right: 20px; bottom: 20px; z-index: 40;
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 8px 14px; border-radius: 999px;
+  padding: 7px 14px 7px 12px; border-radius: 999px;
   background: var(--pagent-surface); border: 1px solid var(--pagent-border);
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
-  max-width: 260px;
+  box-shadow: var(--pagent-shadow); max-width: 260px;
 }
-.ha-fab[data-asking="true"] { border-color: var(--pagent-danger); }
-.ha-fab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-
-/* <AgentBar> */
-.ha-bar-dock {
+.pagent-fab:hover:not(:disabled) { background: var(--pagent-surface); border-color: var(--pagent-border-strong); }
+.pagent-fab[data-asking="true"] { border-color: color-mix(in srgb, var(--pagent-waiting) 45%, var(--pagent-border)); }
+.pagent-fab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.pagent-bar-dock {
   position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 39;
-  width: min(640px, calc(100vw - 32px));
-  display: flex; flex-direction: column; gap: 8px;
+  width: min(640px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 8px;
 }
-.ha-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px 6px 14px; border-radius: 14px;
-  background: var(--pagent-surface); border: 1px solid var(--pagent-border);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.14);
+.pagent-bar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 14px; border-radius: calc(var(--pagent-radius-lg) + 2px);
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border); box-shadow: var(--pagent-shadow);
 }
-.ha-bubble {
-  position: relative; align-self: stretch;
-  padding: 10px 32px 10px 14px; border-radius: 14px;
-  background: var(--pagent-surface); border: 1px solid var(--pagent-border);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.10);
+.pagent-bar-dock > .pagent-question { box-shadow: var(--pagent-shadow); }
+.pagent-bubble {
+  position: relative; align-self: stretch; padding: 12px 36px 12px 16px; border-radius: calc(var(--pagent-radius-lg) + 2px);
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border); box-shadow: var(--pagent-shadow);
   max-height: 40vh; overflow: auto;
 }
-.ha-bubble > .ha-icon { position: absolute; top: 6px; right: 6px; }
+.pagent-bubble > .pagent-icon { position: absolute; top: 8px; right: 8px; }
 
-/* Composer (bar + console) */
-.ha-composer { position: relative; flex: 1; display: flex; gap: 8px; align-items: center; }
-.ha-composer textarea {
-  flex: 1; resize: none; font: inherit; padding: 6px 8px; min-height: 34px; max-height: 160px;
-  border: 0; outline: none; background: transparent; color: var(--pagent-text);
+/* Composer: one rounded field, the send button inside it */
+.pagent-composer { position: relative; flex: 1; display: flex; gap: 8px; align-items: flex-end; }
+.pagent-composer textarea {
+  flex: 1; resize: none; font: inherit; font-size: var(--pagent-message-size); line-height: 1.5; padding: 6px 0;
+  min-height: 34px; max-height: 180px; field-sizing: content; /* grows with the text, where supported */
+  border: 0; border-radius: 0; outline: none; background: transparent; color: var(--pagent-text);
 }
-.ha-console-input .ha-composer textarea { border: 1px solid var(--pagent-border); border-radius: 10px; background: var(--pagent-bg); }
-.ha-commands {
+.pagent-composer > button[type="submit"] {
+  flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pagent-composer > button[type="submit"]:disabled { background: var(--pagent-surface-2); color: var(--pagent-faint); opacity: 1; }
+.pagent-console-input .pagent-composer {
+  padding: 5px 5px 5px 14px; background: var(--pagent-surface);
+  border: 1px solid var(--pagent-border-strong); border-radius: calc(var(--pagent-radius-lg) + 2px);
+  box-shadow: var(--pagent-shadow-md);
+  transition: border-color 120ms var(--pagent-ease), box-shadow 120ms var(--pagent-ease);
+}
+.pagent-console-input .pagent-composer:focus-within {
+  border-color: color-mix(in srgb, var(--pagent-accent) 55%, var(--pagent-border-strong));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pagent-accent) 14%, transparent);
+}
+/* Images going with the message: thumbnails above the text, each with its ×; the clip beside the send button */
+.pagent-composer { flex-wrap: wrap; }
+.pagent-composer textarea { min-width: 0; }
+.pagent-composer-files { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; padding: 4px 0 2px; font-size: 12.5px; }
+.pagent-composer-file { position: relative; display: inline-flex; }
+.pagent-composer-file img { height: 56px; max-width: 96px; object-fit: cover; border-radius: var(--pagent-radius-sm); border: 1px solid var(--pagent-border); background: var(--pagent-surface-2); }
+.pagent-composer-file .pagent-icon {
+  position: absolute; top: -7px; right: -7px; width: 20px; height: 20px; padding: 0; border-radius: 50%; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 13px;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border-strong); color: var(--pagent-muted);
+}
+.pagent-composer-failed { color: var(--pagent-danger); }
+.pagent-composer-clip { flex: none; width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; cursor: pointer; color: var(--pagent-muted); }
+.pagent-composer-clip:hover { background: var(--pagent-surface-2); color: var(--pagent-text); }
+/* Dragging an image over the conversation */
+.pagent-console-drop {
+  position: absolute; inset: 8px; z-index: 5; display: flex; align-items: center; justify-content: center; pointer-events: none;
+  border: 2px dashed var(--pagent-accent); border-radius: var(--pagent-radius-lg); background: color-mix(in srgb, var(--pagent-accent-soft) 85%, transparent);
+  color: var(--pagent-accent); font-size: 15px;
+}
+/* An image in a message: a thumbnail; the server's copy opens full size */
+.pagent-image { display: block; max-width: min(240px, 100%); max-height: 200px; object-fit: contain; border-radius: var(--pagent-radius-sm); border: 1px solid var(--pagent-border); background: var(--pagent-surface); }
+.pagent-image-link, .pagent-turn > .pagent-image { display: inline-block; vertical-align: top; margin: 2px 6px 6px 0; }
+.pagent-commands {
   position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 2;
-  display: flex; flex-direction: column; min-width: 220px; max-height: 260px; overflow: auto;
-  background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: 10px; padding: 4px;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.14);
+  display: flex; flex-direction: column; min-width: 240px; max-height: 280px; overflow: auto;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius); padding: 4px;
+  box-shadow: var(--pagent-shadow);
 }
-.ha-commands button { border: 0; text-align: left; font-family: ui-monospace, monospace; font-size: 12px; }
-.ha-commands button[data-active="true"] { background: var(--pagent-accent-soft); }
+.pagent-commands button { border: 0; text-align: left; font-family: var(--pagent-mono); font-size: 12.5px; font-weight: 400; background: transparent; }
+.pagent-commands button[data-active="true"] { background: var(--pagent-surface-2); }
 
-/* <AgentConsole> */
-.ha-console {
+/* <AgentConsole>: full screen, or inline as the page itself (no frame: the conversation is the page). Its column is
+   --pagent-reading-width wide, centered in whatever room the console has, so any page gets a reading width. */
+.pagent-console {
+  --pagent-gutter: max(16px, calc(50cqw - var(--pagent-reading-width) / 2));
   position: fixed; inset: 0; z-index: 50;
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; container-type: inline-size;
   background: var(--pagent-bg);
 }
-.ha-console-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--pagent-border); background: var(--pagent-surface); }
-.ha-console-log { flex: 1; overflow: auto; padding: 16px max(16px, calc(50vw - 420px)); display: flex; flex-direction: column; gap: 12px; }
-.ha-console-input { padding: 12px max(16px, calc(50vw - 420px)) 16px; border-top: 1px solid var(--pagent-border); background: var(--pagent-surface); }
-.ha-console .ha-turn { max-width: 100%; }
-.ha-toolcard { border: 1px solid var(--pagent-border); border-radius: 8px; background: var(--pagent-surface); margin: 4px 0; }
-.ha-toolcard summary { display: flex; gap: 8px; align-items: center; padding: 4px 8px; cursor: pointer; list-style: none; }
-.ha-toolcard-brief { color: var(--pagent-muted); font-family: ui-monospace, monospace; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ha-toolcard pre { margin: 0; padding: 8px; border-top: 1px solid var(--pagent-border); max-height: 300px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-.ha-toolcard-out { color: var(--pagent-muted); }
-
-/* <QuestionCard> */
-.ha-question { border: 1px solid var(--pagent-accent); background: var(--pagent-accent-soft); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
-.ha-question-text { font-weight: 600; }
-.ha-question-options { display: flex; flex-wrap: wrap; gap: 6px; }
-.ha-question input { width: 100%; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--pagent-border); background: var(--pagent-surface); color: var(--pagent-text); }
-.ha-console-inline { position: relative; inset: auto; z-index: auto; height: calc(100vh - 110px); border: 1px solid var(--pagent-border); border-radius: 12px; overflow: hidden; }
-.ha-console-inline .ha-console-log, .ha-console-inline .ha-console-input { padding-left: 16px; padding-right: 16px; }
-.ha-question-detail { margin: 0; padding: 6px 8px; background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: 6px; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
-.ha-resume { font-size: 12px; padding: 2px 8px; color: var(--pagent-muted); }
-/* A node's wrapper takes no part in layout, so height: 100% chains through nested nodes. */
-.ha-node { display: contents; }
-
-/* The agent's native CLI */
-.ha-terminal { background: #14161a; border-radius: 10px; padding: 8px; min-height: 360px; height: 100%; box-sizing: border-box; overflow: hidden; }
-.ha-terminal { display: flex; position: relative; }
-.ha-terminal-screen { flex: 1; min-width: 0; min-height: 0; }
-.ha-terminal-conflict {
-  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 14px;
-  padding: 24px; max-width: 560px; margin: auto; color: #e4e4e4; font-size: 14px; line-height: 1.5;
+.pagent-console-head {
+  display: flex; align-items: center; gap: 8px; min-height: 40px;
+  padding: 8px var(--pagent-gutter);
+  font-size: 13px; border-bottom: 1px solid var(--pagent-border);
 }
-.ha-terminal-conflict p { margin: 0; }
-.ha-terminal-choices { display: flex; flex-wrap: wrap; gap: 8px; }
-.ha-terminal-choices .ha-quiet { background: transparent; color: #b8b6b0; }
+.pagent-console-head strong { font-weight: 600; }
+.pagent-console-head .pagent-muted { color: var(--pagent-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pagent-console-log { flex: 1; overflow: auto; padding: 20px var(--pagent-gutter); display: flex; flex-direction: column; gap: 18px; }
+.pagent-console-input { padding: 8px var(--pagent-gutter) 16px; }
+.pagent-console-inline { --pagent-gutter: max(0px, calc(50cqw - var(--pagent-reading-width) / 2)); position: relative; inset: auto; z-index: auto; height: calc(100vh - 110px); background: transparent; }
+.pagent-console-inline .pagent-console-head { border-bottom: 0; padding-top: 4px; padding-bottom: 0; }
+.pagent-console-inline .pagent-console-input { padding-bottom: 0; }
+.pagent-console-empty { margin: auto; padding: 0 16px 10vh; text-align: center; color: var(--pagent-muted); font-size: var(--pagent-message-size); max-width: 420px; }
+.pagent-console-empty strong { display: block; color: var(--pagent-text); font-size: 18px; font-weight: 600; margin-bottom: 6px; }
+.pagent-resume, .pagent-stop { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; white-space: nowrap; }
+/* Messages written while the agent works, sent once it is done */
+.pagent-queued { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.pagent-queued-item { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; padding: 4px 8px; border: 1px dashed var(--pagent-border-strong); border-radius: var(--pagent-radius); }
+.pagent-queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The agent at work, at the end of the conversation: three breathing dots, what it is doing, for how long */
+.pagent-working { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--pagent-muted); }
+.pagent-working-dots { display: inline-flex; gap: 3px; flex: none; }
+.pagent-working-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--pagent-working); animation: pagent-typing 1.2s ease-in-out infinite; }
+.pagent-working-dots i:nth-child(2) { animation-delay: 0.15s; }
+.pagent-working-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes pagent-typing { 0%, 60%, 100% { opacity: 0.3; transform: none; } 30% { opacity: 1; transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .pagent-working-dots i { animation: none; opacity: 0.7; } }
+.pagent-working-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pagent-working-time { flex: none; color: var(--pagent-faint); font-variant-numeric: tabular-nums; }
 
-/* Permission requests from any agent, on any page */
-.ha-permissions { position: fixed; right: 16px; bottom: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; width: min(380px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; }
-.ha-permission { background: var(--pagent-surface); border-radius: 12px; box-shadow: 0 6px 24px rgb(0 0 0 / 0.18); }
-.ha-permission-from { font-size: 12px; color: var(--pagent-muted); padding: 8px 12px 0; font-family: ui-monospace, monospace; }
-.ha-permission .ha-question { border-radius: 0 0 12px 12px; border-width: 0; border-top-width: 1px; margin-top: 6px; }
+@media (max-width: 760px) {
+  :root { --pagent-message-size: 16px; } /* also keeps iOS from zooming into the composer */
+  .pagent-turn.pagent-user { max-width: 88%; }
+  .pagent-console-head .pagent-muted { display: none; }
+}
+
+/* ---------------------------------------------------------------- questions and permission requests
+   One surface: who waits and for what, the question, the answers (a permission's Allow is the primary one). */
+.pagent-question {
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border-strong); border-radius: var(--pagent-radius-lg);
+  padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: var(--pagent-shadow-sm);
+}
+.pagent-question-eyebrow { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--pagent-muted); }
+.pagent-question-text { font-weight: 600; font-size: var(--pagent-message-size); line-height: 1.5; }
+.pagent-question-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.pagent-question-options button { padding: 6px 14px; }
+.pagent-question form { margin: 0; }
+.pagent-question input { width: 100%; }
+.pagent-question-detail {
+  margin: 0; padding: 8px 10px; background: var(--pagent-surface-2); border-radius: var(--pagent-radius-sm);
+  max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.5;
+}
+/* A form an agent asked for (ask-user --field); a Secure Form (--secret --into): one private value, masked, with a
+   Show toggle, that goes straight to its target. The same surface as a question. */
+.pagent-form { margin: 0; }
+.pagent-form-badge { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--pagent-text); }
+.pagent-form-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.pagent-form-label { color: var(--pagent-muted); }
+.pagent-form-input { position: relative; display: flex; align-items: center; }
+.pagent-form-input input { flex: 1; min-width: 0; }
+.pagent-form[data-secret] .pagent-form-input input { font-family: var(--pagent-mono); padding-right: 40px; }
+.pagent-form-input .pagent-icon { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: inline-flex; padding: 5px 7px; }
+.pagent-form-input .pagent-icon[aria-pressed="true"] { color: var(--pagent-text); }
+.pagent-form-note { font-size: 12.5px; line-height: 1.5; color: var(--pagent-muted); }
+.pagent-form-error { font-size: 12.5px; line-height: 1.5; color: var(--pagent-danger); }
+/* Where the agent asked for a form, in its reply: "<question> · Secure Form · ✓ Submitted". Never a value. */
+.pagent-formchip {
+  display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; margin: 4px 0; padding: 7px 12px;
+  font-size: 13px; line-height: 1.4; background: var(--pagent-surface); border: 1px solid var(--pagent-border);
+  border-radius: var(--pagent-radius); box-shadow: var(--pagent-shadow-sm);
+}
+.pagent-formchip > svg { flex: none; color: var(--pagent-muted); }
+.pagent-formchip-title { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pagent-formchip-kind, .pagent-formchip-state { flex: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; color: var(--pagent-muted); }
+.pagent-formchip-kind::before, .pagent-formchip-state::before { content: "·"; margin-right: 5px; color: var(--pagent-faint); }
+.pagent-formchip[data-state="waiting"] .pagent-formchip-state { color: var(--pagent-waiting-text); }
+.pagent-formchip[data-state="submitted"] .pagent-formchip-state { color: var(--pagent-text); }
+.pagent-formchip[data-state="failed"] .pagent-formchip-state { color: var(--pagent-danger); }
+.pagent-tools > .pagent-formchip { margin: 0; }
+/* A phone: the question on the first line, what it is and how it went on the second */
+@media (max-width: 760px) {
+  .pagent-formchip { flex-wrap: wrap; row-gap: 2px; }
+  .pagent-formchip-title { flex: 1 1 calc(100% - 30px); }
+  .pagent-formchip-kind { margin-left: 22px; }
+  .pagent-formchip-kind::before { display: none; }
+}
+/* From any agent, on any page: top right, under the bar, never over the composer */
+.pagent-permissions {
+  position: fixed; top: 52px; right: 12px; z-index: 50;
+  display: flex; flex-direction: column; gap: 8px;
+  width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 64px); overflow: auto;
+}
+.pagent-permission { background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius-lg); box-shadow: var(--pagent-shadow); animation: pagent-drop 200ms var(--pagent-ease); }
+@keyframes pagent-drop { from { transform: translateY(-6px); opacity: 0; } }
+.pagent-permission .pagent-question { border: 0; box-shadow: none; background: transparent; }
+@media (max-width: 760px) {
+  .pagent-permissions { left: 8px; right: 8px; width: auto; }
+  /* The drawer open: the user is going somewhere; the cards wait under it */
+  body:has(.pagent-app[data-rail="over"]) .pagent-permissions { z-index: 18; }
+}
+/* A node's wrapper takes no part in layout, so height: 100% chains through nested nodes. */
+.pagent-node { display: contents; }
+
+/* ---------------------------------------------------------------- cards
+   A node in a reply (```pagent blocks), live. The frame says what it is (its page's title, what it shows) and opens
+   its page; the node owns the rest, padding included (cards pad themselves 16px), so there is no double gutter. */
+.pagent-turn:has(.pagent-card) { align-self: stretch; }
+.pagent-card {
+  max-width: var(--pagent-reading-width); margin: 12px 0; overflow: hidden;
+  border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius-lg); background: var(--pagent-surface); box-shadow: var(--pagent-shadow-sm);
+}
+.pagent-card-head { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 6px 0 8px; border-bottom: 1px solid var(--pagent-border); font-size: 13px; color: var(--pagent-muted); }
+.pagent-card[data-folded] .pagent-card-head { border-bottom: 0; }
+/* The title row folds the card and opens it again: the whole row but Open */
+.pagent-card-fold {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px 0 4px;
+  border: 0; border-radius: var(--pagent-radius-sm); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.pagent-card-fold:hover:not(:disabled) { background: var(--pagent-surface-2); }
+.pagent-card-fold .pagent-chevron { transform: rotate(90deg); }
+.pagent-card[data-folded] .pagent-card-fold .pagent-chevron { transform: none; }
+.pagent-card[data-compact] .pagent-card-body { max-height: 240px; }
+.pagent-card-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pagent-card-path b { font-weight: 500; color: var(--pagent-text); }
+.pagent-card-path span { color: var(--pagent-faint); }
+.pagent-card-open {
+  display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: var(--pagent-radius-sm);
+  font-size: 12px; font-weight: 500; color: var(--pagent-muted); text-decoration: none; white-space: nowrap;
+}
+.pagent-card-open:hover { background: var(--pagent-surface-2); color: var(--pagent-text); }
+.pagent-card-body { padding: 0; max-height: 480px; overflow: auto; }
+.pagent-card-body > .pagent-muted, .pagent-card-body > .pagent-node > .pagent-muted { display: block; padding: 12px 14px; }
+.pagent-card-pending { padding: 16px; color: var(--pagent-faint); }
+.pagent-missing { padding: 4px 0; font-size: 13px; color: var(--pagent-faint); }
+.pagent-card-body > .pagent-node > .pagent-error { margin: 12px 14px; }
+
+/* ---------------------------------------------------------------- the agent's native CLI
+   Dark in both themes (--pagent-terminal-*); xterm reads the same tokens (TerminalView). The padding lives on the
+   frame, so the fit addon measures exactly the space xterm may use. */
+.pagent-terminal {
+  display: flex; position: relative; box-sizing: border-box; overflow: hidden;
+  min-height: 360px; height: 100%; padding: 12px 6px 10px 14px;
+  background: var(--pagent-terminal-bg); border-radius: var(--pagent-radius);
+}
+.pagent-terminal-screen { flex: 1; min-width: 0; min-height: 0; }
+.pagent-terminal-conflict {
+  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 14px;
+  padding: 24px; max-width: 560px; margin: auto; color: var(--pagent-terminal-fg); font-size: 14px; line-height: 1.6;
+}
+.pagent-terminal-conflict p { margin: 0; }
+.pagent-terminal-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.pagent-terminal-choices button {
+  background: color-mix(in srgb, var(--pagent-terminal-fg) 10%, var(--pagent-terminal-bg));
+  border-color: color-mix(in srgb, var(--pagent-terminal-fg) 20%, var(--pagent-terminal-bg));
+  color: var(--pagent-terminal-fg);
+}
+.pagent-terminal-choices button:hover:not(:disabled) { background: color-mix(in srgb, var(--pagent-terminal-fg) 16%, var(--pagent-terminal-bg)); }
+.pagent-terminal-choices .pagent-quiet { background: transparent; border-color: transparent; color: color-mix(in srgb, var(--pagent-terminal-fg) 70%, var(--pagent-terminal-bg)); }

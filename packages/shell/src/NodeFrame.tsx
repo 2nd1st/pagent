@@ -1,5 +1,5 @@
 // Renders one node file (page or layout): load its manifest + compiled module, provide its scope.
-// How nodes are loaded is a NodeLoader: HTTP + SSE in the shell, MCP tool calls inside an MCP App iframe.
+// How nodes are loaded is a NodeLoader (host.ts: HTTP + SSE).
 import { Component, createContext, useContext, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { ScopeContext, type AgentRef, type Scope } from "@pagent/bridge";
 
@@ -26,7 +26,7 @@ class Boundary extends Component<{ path: string; children: ReactNode }, { error:
   render() {
     if (this.state.error) {
       return (
-        <div className="ha-error">
+        <div className="pagent-error">
           <strong>{this.props.path}</strong> failed to render
           <pre>{this.state.error.message}</pre>
         </div>
@@ -100,17 +100,19 @@ export function NodeFrame({
 
   const errors = info?.manifest.errors ?? [];
   return (
-    <div className="ha-node" data-path={path} data-file={file}>
-      {error && <div className="ha-error">{error}</div>}
+    <div className="pagent-node" data-path={path} data-file={file}>
+      {error && <div className={/^no node at /.test(error) ? "pagent-muted pagent-missing" : "pagent-error"}>{error}</div>}
       {/* The code on disk is what everyone sees: its problems are shown, so the user can ask its agent to fix them. */}
-      {errors.length > 0 && <pre className="ha-error">{errors.join("\n")}</pre>}
+      {errors.length > 0 && <pre className="pagent-error">{errors.join("\n")}</pre>}
       <ScopeContext.Provider value={scope}>
-        {mod ? (
+        {info && !info.files.includes(file) ? (
+          <div className="pagent-muted pagent-missing">no {file}.tsx at {path}</div>
+        ) : mod ? (
           <Boundary key={mod.version} path={path}>
             <mod.Comp {...props}>{children}</mod.Comp>
           </Boundary>
         ) : (
-          !error && <div className="ha-muted">loading {path}…</div>
+          !error && <div className="pagent-muted">loading {path}…</div>
         )}
       </ScopeContext.Provider>
     </div>

@@ -1,36 +1,39 @@
-// Triggers: the app acting on its own. Declared in node code (export const triggers) and run by the server:
-// cron on the minute, watch when a data file of the node changes, webhook on POST /hooks/<node>/<name>.
-// Cheapest first: `run` is an action (code, no LLM); with `ask` as well, the agent is woken only when the
-// action printed something, and gets that output. A trigger never overlaps itself, and waits while another
-// process has the agent's session open (nobody is there to choose a fork).
+// Triggers: the app acting on its own. Declared in node code (export const triggers) and run by the server: when
+// (cron on the minute, every N seconds (polling local state), watch when a data file changes (the node's, or another
+// node's: "~/worker/tasks.json"), app when a bridge's app changes (its window, or one element of it; AXObserver, no
+// polling)) + an action (run). The action is all a trigger does: code, no LLM, the same as `pagent run` of it. An
+// agent wakes only when the action tells it to (tell() from "pagent/server"; its caller is this trigger, so that run
+// is unattended). (An HTTP entry is a route: routes.ts.) A trigger never overlaps itself.
 //
 // Watch, without losing changes or looping: a change while the trigger runs marks it dirty, and it runs once more
-// when it ends (a `run` filter then finds nothing and stops by itself). Changes that arrive after a run are
-// compared with the files as that run left them, so late echoes of its own writes do not start it again. An
-// ask-only trigger whose agent writes the very file it watches would wake itself forever; re-runs in a row are
-// capped (MAX_RERUNS), and a well-behaved agent stops sooner: the extra wake finds nothing new and writes nothing.
-import { ask, conflictOf, type AgentRef } from "./agents.ts";
-import { runAction } from "./actions.ts";
+// when it ends (the action then finds nothing new and stops by itself). Changes that arrive after a run are compared
+// with the files as that run left them, so late echoes of its own writes do not start it again. Re-runs in a row are
+// capped (MAX_RERUNS). An agent the action tells is not waited for: if it writes the watched file, that is a change
+// like any other, and the action decides again (so it tells only when there is something new).
+import { runAction, valueText } from "./actions.ts";
+import { axModule } from "./ax-module.ts";
+import { endTurn } from "./quit.ts";
 import { dataVersion, dataVersions } from "./data.ts";
 import { broadcast, onEvent } from "./events.ts";
-import { cronFields, type TriggerDecl } from "./extract.ts";
+import { cronFields, everyMs, watchOf, type TriggerDecl } from "./extract.ts";
 import type { Nodes } from "./nodes.ts";
-import { terminalOf } from "./terminal.ts";
 import { listNodes } from "./tree.ts";
 
 type Ctx = { root: string; nodes: Nodes; baseUrl: string };
-type Armed = { node: string; decl: TriggerDecl; cron: number[][] | null };
+/** watch: whose data files (the trigger's own node's, or the node its watch names) and which. */
+type Armed = { node: string; decl: TriggerDecl; cron: number[][] | null; app?: string; watch?: Watched };
+type Watched = { node: string; pattern: string };
 export type TriggerRun = { at: string; why: string; result: string };
 
 let armed: Armed[] = [];
-const running = new Set<string>();
+let timers: NodeJS.Timeout[] = []; // the `every` ones
+const running = new Map<string, Promise<string>>(); // what each running trigger will result in
 const dirty = new Set<string>(); // its watched files changed while it ran
 const seen = new Map<string, string>(); // its watched files as its last run left them
 const MAX_RERUNS = 3;
 const last = new Map<string, TriggerRun>();
+const failed = new Map<string, string>(); // its action's last failure (first line), while it keeps failing
 const keyOf = (node: string, name: string) => `${node}#${name}`;
-const BUSY_RECHECK = 30_000;
-const BUSY_MAX = 60 * 60_000;
 
 /** Read every node's triggers (again whenever code changes). */
 async function arm(ctx: Ctx) {
@@ -38,66 +41,122 @@ async function arm(ctx: Ctx) {
   for (const node of listNodes(ctx.root)) {
     const d = await ctx.nodes.declarations(node).catch(() => null);
     if (!d) continue;
-    for (const decl of d.manifest.triggers) next.push({ node, decl, cron: decl.cron ? cronFields(decl.cron) : null });
+    const app = typeof d.manifest.config?.app === "string" ? d.manifest.config.app : undefined;
+    for (const decl of d.manifest.triggers) {
+      const w = decl.watch ? watchOf(decl.watch) : null;
+      next.push({ node, decl, cron: decl.cron ? cronFields(decl.cron) : null, ...(app ? { app } : {}), ...(w ? { watch: { node: w.node ?? node, pattern: w.pattern } } : {}) });
+    }
   }
   armed = next;
+  for (const t of timers) clearInterval(t);
+  // A tick while the last run still goes is skipped (fire never overlaps a trigger with itself). An app trigger's
+  // `every` is its fallback: it polls only while the app cannot be watched.
+  timers = next.filter((a) => a.decl.every && !a.decl.app).map((a) => setInterval(() => void fire(ctx, a, `every ${a.decl.every}`), everyMs(a.decl.every!)!));
+  armApps(ctx, next);
 }
 
-/** Which agent an `ask` goes to: the named one, else this node's, else the nearest one above (like events). */
-async function target(ctx: Ctx, node: string, agent?: string): Promise<AgentRef | null> {
-  if (agent?.includes("#")) {
-    const [n, a] = agent.split("#");
-    return { node: n || "/", agent: a };
+// ---------------------------------------------------------------- app: the bridge's app changed
+// The server holds one watch (@pagent/ax, AXObserver in a long-lived helper) per such trigger, for as long as it is
+// declared: it fires when it attaches (the app is running, or just started: catch up) and on every batch of changes.
+// While the app runs but cannot be watched, `every` (if given) polls instead. A change during a run marks it dirty,
+// and it runs once more when it ends (as watch does).
+
+type AppWatch = { sig: string; stop: () => void; state: string };
+const appWatches = new Map<string, AppWatch>(); // node#name → its watch
+
+function armApps(ctx: Ctx, next: Armed[]) {
+  const want = new Map(next.filter((a) => a.decl.app && a.app).map((a) => [keyOf(a.node, a.decl.name), a]));
+  const sig = (a: Armed) => JSON.stringify([a.app, a.decl.app, a.decl.every, a.decl.run]);
+  for (const [k, w] of appWatches) {
+    const a = want.get(k);
+    if (a && sig(a) === w.sig) continue;
+    w.stop();
+    appWatches.delete(k);
   }
-  for (let p = node; ; p = p.slice(0, p.lastIndexOf("/")) || "/") {
-    const agents = (await ctx.nodes.declarations(p).catch(() => null))?.manifest.agents ?? [];
-    const hit = agent && p === node ? agents.find((a) => a.name === agent) : agents[0];
-    if (hit) return { node: p, agent: hit.name };
-    if (p === "/") return null;
+  for (const [k, a] of want) if (!appWatches.has(k)) void watchApp(ctx, a, k, sig(a));
+}
+
+async function watchApp(ctx: Ctx, a: Armed, key: string, sig: string) {
+  const w: AppWatch = { sig, stop: () => {}, state: "starting" };
+  appWatches.set(key, w);
+  const changed = (why: string) => {
+    if (running.has(key)) dirty.add(key);
+    else void fire(ctx, a, why);
+  };
+  let poll: NodeJS.Timeout | undefined;
+  try {
+    const { watch } = await axModule();
+    if (appWatches.get(key) !== w) return; // re-armed meanwhile
+    const target = a.decl.app === true ? null : a.decl.app!;
+    const handle = watch(a.app!, target, (changes) => changed(`app ${a.app} changed (${changes.length})`), {
+      onStatus: (s) => {
+        w.state = s.state === "failed" ? `failed: ${s.error}` : s.state;
+        clearInterval(poll);
+        poll = undefined;
+        if (s.state === "attached") changed(`app ${a.app} attached`);
+        if (s.state === "failed") {
+          console.error(`trigger ${key}: cannot watch ${a.app}: ${s.error}${a.decl.every ? `; polling every ${a.decl.every}` : ""}`);
+          if (a.decl.every) poll = setInterval(() => void fire(ctx, a, `every ${a.decl.every} (${a.app} cannot be watched)`), everyMs(a.decl.every)!);
+        }
+      },
+    });
+    w.stop = () => {
+      clearInterval(poll);
+      handle.stop();
+    };
+  } catch (e) {
+    w.state = `failed: ${(e as Error).message}`;
+    console.error(`trigger ${key}: cannot watch ${a.app}: ${(e as Error).message}`);
   }
 }
 
-/** Fire one trigger now. Resolves with what happened (the action's output, or the agent's reply). */
-export async function fire(ctx: Ctx, node: string, decl: TriggerDecl, why: string, input?: unknown, rerun = 0): Promise<string> {
+/** How an app trigger's watch is doing (attached, waiting for the app, failed: why), or null when it has none. */
+export function appWatch(node: string, name: string): string | null {
+  return appWatches.get(keyOf(node, name))?.state ?? null;
+}
+
+/** Fire one trigger now: run its action. Resolves with what happened (its output, or why it failed). */
+function fire(ctx: Ctx, a: Armed, why: string, rerun = 0): Promise<string> {
+  const key = keyOf(a.node, a.decl.name);
+  if (running.has(key)) return Promise.resolve(`Trigger ${key} is still running; skipped.`);
+  const result = run(ctx, a, why, rerun);
+  running.set(key, result);
+  return result;
+}
+
+async function run(ctx: Ctx, a: Armed, why: string, rerun: number): Promise<string> {
+  const { node, decl } = a;
   const key = keyOf(node, decl.name);
-  if (running.has(key)) return `Trigger ${key} is still running; skipped.`;
-  running.add(key);
   broadcast({ type: "trigger", node, name: decl.name, why });
   let result = "";
   try {
-    let context = input === undefined ? "" : typeof input === "string" ? input : JSON.stringify(input, null, 2);
-    if (decl.run) {
-      const r = await runAction(ctx.root, ctx.nodes, node, decl.run, input);
-      context = r.ok ? r.stdout.trim() : `The action "${decl.run}" failed:\n${r.stderr}\n${r.stdout}`.trim();
-      if (!decl.ask) return (result = context || "(no output)");
-      if (!context) return (result = "Nothing to do (the action printed nothing).");
+    const r = await runAction(ctx.root, ctx.nodes, node, decl.run, undefined, { caller: { kind: "trigger", node, name: decl.name }, turn: `trigger:${key}` });
+    if (r.ok) {
+      failed.delete(key);
+      return (result = valueText(r).trim() || "(no output)");
     }
-    const to = await target(ctx, node, decl.agent);
-    if (!to) return (result = `No agent at or above ${node} to ask.`);
-    for (const since = Date.now(); !terminalOf(to) && (await conflictOf(ctx, to)); ) {
-      if (Date.now() - since > BUSY_MAX) return (result = `Skipped: ${to.node}#${to.agent}'s session stayed open in another process.`);
-      await new Promise((r) => setTimeout(r, BUSY_RECHECK));
-    }
-    const message = `${decl.ask}${context ? `\n\n${context}` : ""}`;
-    result = await ask(ctx, { ...to, message, origin: `trigger:${to.node === node ? "" : node + ":"}${decl.name}` });
-    return result;
+    // An action that keeps failing the same way is logged once, not on every tick (an `every: "5s"` whose code does
+    // not compile would fill the log); `pagent tree` shows its last result.
+    const failure = r.error.trim().split("\n")[0];
+    if (failed.get(key) !== failure) console.error(`trigger ${key}: the action "${decl.run}" failed: ${failure}`);
+    failed.set(key, failure);
+    return (result = `The action "${decl.run}" failed:\n${r.stack ?? r.error}\n${r.logs}`.trim());
   } catch (e) {
     return (result = `Trigger failed: ${(e as Error).message}`);
   } finally {
     running.delete(key);
+    void endTurn(`trigger:${key}`); // a `quit: "after"` bridge's app it launched
     last.set(key, { at: new Date().toISOString(), why, result: result.slice(0, 500) });
-    if (decl.watch) {
-      seen.set(key, fingerprint(ctx, node, decl.watch));
-      if (dirty.delete(key)) {
-        if (rerun < MAX_RERUNS) void fire(ctx, node, decl, `watch (changed while running)`, "Watched files changed while the last run was going.", rerun + 1);
-        else console.error(`trigger ${key}: changed during ${MAX_RERUNS + 1} runs in a row; waiting for the next change`);
-      }
+    if (a.watch) seen.set(key, fingerprint(ctx, a.watch));
+    if ((a.watch || decl.app) && dirty.delete(key)) {
+      if (rerun < MAX_RERUNS) void fire(ctx, a, `${a.watch ? "watch" : "app"} (changed while running)`, rerun + 1);
+      else console.error(`trigger ${key}: changed during ${MAX_RERUNS + 1} runs in a row; waiting for the next change`);
     }
   }
 }
 
-/** The watched files of a node as they are now (name:hash …). */
-function fingerprint(ctx: Ctx, node: string, pattern: string): string {
+/** The watched files as they are now (name:hash …). */
+function fingerprint(ctx: Ctx, { node, pattern }: Watched): string {
   return Object.keys(dataVersions(ctx.root, node))
     .filter((f) => matches(pattern, f))
     .sort()
@@ -107,10 +166,6 @@ function fingerprint(ctx: Ctx, node: string, pattern: string): string {
 
 export function lastRun(node: string, name: string): TriggerRun | undefined {
   return last.get(keyOf(node, name));
-}
-
-export function findTrigger(node: string, name: string): Armed | undefined {
-  return armed.find((a) => a.node === node && a.decl.name === name);
 }
 
 const full = [60, 24, 31, 12, 7];
@@ -134,16 +189,16 @@ export async function startTriggers(ctx: Ctx) {
     }
     if (e.type === "data") {
       for (const a of armed) {
-        if (!a.decl.watch || a.node !== e.path || !matches(a.decl.watch, e.file)) continue;
+        if (!a.watch || a.watch.node !== e.path || !matches(a.watch.pattern, e.file)) continue;
         const key = keyOf(a.node, a.decl.name);
         if (running.has(key)) dirty.add(key);
-        else if (seen.get(key) !== fingerprint(ctx, a.node, a.decl.watch)) void fire(ctx, a.node, a.decl, `watch ${e.file}`, `${e.file} changed.`);
+        else if (seen.get(key) !== fingerprint(ctx, a.watch)) void fire(ctx, a, `watch ${a.watch.node === a.node ? e.file : `~${a.watch.node === "/" ? "" : a.watch.node}/${e.file}`}`);
       }
     }
   });
   const tick = () => {
     const now = new Date();
-    for (const a of armed) if (a.cron && due(a.cron, now)) void fire(ctx, a.node, a.decl, `cron ${a.decl.cron}`);
+    for (const a of armed) if (a.cron && due(a.cron, now)) void fire(ctx, a, `cron ${a.decl.cron}`);
     setTimeout(tick, 60_000 - (Date.now() % 60_000) + 50);
   };
   setTimeout(tick, 60_000 - (Date.now() % 60_000) + 50);

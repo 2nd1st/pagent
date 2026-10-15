@@ -32,10 +32,10 @@ if (!existsSync(app)) {
   console.log(`created ${app}`);
 }
 
-const port = process.env.HA_PORT ?? "4870";
+const port = process.env.PAGENT_PORT ?? "4870";
 const procs = [
   spawn(process.execPath, [join(engine, "packages/core/src/cli.ts"), "serve", app, "--port", port], { stdio: "inherit" }),
-  spawn("pnpm", ["--filter", "@pagent/shell", "dev"], { stdio: "inherit", env: { ...process.env, HA_PORT: port } }),
+  spawn("pnpm", ["--filter", "@pagent/shell", "dev"], { stdio: "inherit", env: { ...process.env, PAGENT_PORT: port } }),
 ];
 const stop = () => procs.forEach((p) => p.kill());
 process.on("SIGINT", stop);

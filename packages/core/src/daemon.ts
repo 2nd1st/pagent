@@ -1,5 +1,6 @@
-// The daemon: one per machine. It owns the processes that must outlive an app server — agents' TUIs (ptys) and
-// headless turns — so restarting or upgrading a server, or closing every page, leaves the agents running. App
+// The daemon: one per machine. It owns the processes that must outlive an app server — agents' TUIs (ptys),
+// headless turns, long-lived agent sessions (a Codex agent's client on its thread) and the services they share (Codex's
+// app-server) — so restarting or upgrading a server, or closing every page, leaves the agents running. App
 // servers connect over a unix socket, start processes, attach to them, and find them again after a restart.
 // It knows nothing about apps beyond the metadata a server attaches to each process; keep it small, because
 // restarting it is the one thing that does stop the agents.
@@ -7,6 +8,7 @@
 // Protocol: newline-delimited JSON. Requests {rid, op, ...} get {re: rid, ok, ...}; processes a connection is
 // attached to send {ev: "data" | "stderr" | "status" | "exit", proc, ...}.
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { connect, createServer, type Socket } from "node:net";
@@ -33,7 +35,10 @@ type Conn = { socket: Socket; send: (m: unknown) => void; app?: { root: string; 
 
 const procs = new Map<string, Proc>();
 const conns = new Set<Conn>();
-const { home, socket: socketPath } = daemonPaths();
+const { home, socket: socketPath, agents: agentsPath } = daemonPaths();
+// What an agent's token is made from (agents.ts): in memory only, so it lives exactly as long as the agents this
+// daemon runs, and no file holds it.
+const secret = randomBytes(32).toString("hex");
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 
 // pnpm unpacks node-pty's prebuilt spawn-helper without its execute bit.
@@ -57,7 +62,7 @@ function exited(p: Proc, code: number | null) {
 }
 
 function start(req: SpawnRequest): Proc {
-  const info: ProcInfo = { id: req.id, kind: req.kind, meta: req.meta ?? {}, pid: 0, startedAt: Date.now(), status: null, exit: null };
+  const info: ProcInfo = { id: req.id, kind: req.kind, meta: req.meta ?? {}, pid: 0, startedAt: Date.now(), status: null, exit: null, ...(req.service ? { service: true } : {}) };
   if (req.kind === "pty") {
     ensureSpawnHelper();
     const t = pty.spawn(req.command, req.args, { name: "xterm-256color", cols: req.cols ?? 100, rows: req.rows ?? 30, cwd: req.cwd, env: req.env });
@@ -71,10 +76,8 @@ function start(req: SpawnRequest): Proc {
       resize: (c, r) => c > 0 && r > 0 && t.resize(c, r),
       kill: (s) => t.kill(s),
     };
-    const title = req.titleStatus && { working: new RegExp(req.titleStatus.working), blocked: new RegExp(req.titleStatus.blocked) };
     t.onData((data) => {
       readStatus(p, data);
-      if (title) readTitle(p, data, title);
       p.output = (p.output + data).slice(-KEEP_PTY);
       emit(p, { ev: "data", data });
     });
@@ -93,7 +96,7 @@ function start(req: SpawnRequest): Proc {
     kill: (s) => child.kill((s as NodeJS.Signals) ?? "SIGTERM"),
   };
   child.stdout.setEncoding("utf8").on("data", (data: string) => {
-    p.output += data;
+    if (!req.open) p.output += data;
     emit(p, { ev: "data", data });
   });
   child.stderr.setEncoding("utf8").on("data", (data: string) => {
@@ -103,7 +106,8 @@ function start(req: SpawnRequest): Proc {
   child.on("error", (e) => log(`spawn ${req.id} failed: ${e.message}`));
   child.on("close", (code) => exited(p, code));
   child.stdin.on("error", () => {});
-  child.stdin.end(req.stdin ?? "");
+  if (req.open) child.stdin.write(req.stdin ?? "");
+  else child.stdin.end(req.stdin ?? "");
   return p;
 }
 
@@ -138,18 +142,6 @@ function readStatus(p: Proc, data: string) {
   }
 }
 
-// A title-reporting TUI (Codex) redraws its title with every spinner frame: only a change of state is news.
-function readTitle(p: Proc, data: string, rule: { working: RegExp; blocked: RegExp }) {
-  for (const m of data.matchAll(/\x1b\][02];([^\x07\x1b]*)(?:\x07|\x1b\\)/g)) {
-    const title = m[1];
-    const state = rule.blocked.test(title) ? "blocked" : rule.working.test(title) ? "working" : "idle";
-    if (p.info.status?.state === state) continue;
-    const status: TermStatus = { state, ...(state === "blocked" ? { kind: "permission" } : {}), ...(state !== "idle" ? { msg: title } : {}) };
-    p.info.status = status;
-    emit(p, { ev: "status", status });
-  }
-}
-
 // ---------------------------------------------------------------- requests
 
 function handle(c: Conn, m: any): Record<string, unknown> {
@@ -165,7 +157,7 @@ function handle(c: Conn, m: any): Record<string, unknown> {
       c.app = { root: m.root, port: m.port, pid: m.pid };
       apps.set(appId(m.root), { port: m.port, up: true });
       for (const w of waiters.splice(0)) w();
-      return { proxy: proxyPort && `http://127.0.0.1:${proxyPort}/a/${appId(m.root)}` };
+      return { proxy: proxyPort && `http://127.0.0.1:${proxyPort}/a/${appId(m.root)}`, agents: agentsFailed ? null : agentsPath, secret };
     case "spawn": {
       const old = procs.get(m.id);
       if (old && !old.info.exit) throw new Error(`process ${m.id} is already running`);
@@ -270,17 +262,26 @@ async function proxy(req: IncomingMessage, res: ServerResponse) {
   }
 }
 
-const http = createHttpServer((req, res) => void proxy(req, res).catch(() => res.destroyed || res.writeHead(502).end()));
+const proxied = (req: IncomingMessage, res: ServerResponse) => void proxy(req, res).catch(() => res.destroyed || res.writeHead(502).end());
+const http = createHttpServer(proxied);
 http.on("error", (e) => log(`no agent proxy (${(e as Error).message}); agents will reach their app servers directly`));
+
+// The same proxy on a unix socket, for agents' `pagent` commands (POST /a/<app>/_cli): a sandboxed agent (Codex)
+// can be allowed this one socket without being given the network.
+const agentsHttp = createHttpServer(proxied);
+let agentsFailed = false;
+agentsHttp.on("error", (e) => (agentsFailed = true, log(`no socket for agents' pagent commands (${(e as Error).message})`)));
 
 function shutdown() {
   log("stopping");
   for (const p of procs.values()) if (!p.info.exit) p.kill("SIGTERM");
   setTimeout(() => {
     for (const p of procs.values()) if (!p.info.exit) p.kill("SIGKILL");
-    try {
-      unlinkSync(socketPath);
-    } catch {}
+    for (const s of [socketPath, agentsPath]) {
+      try {
+        unlinkSync(s);
+      } catch {}
+    }
     process.exit(0);
   }, 1500).unref();
 }
@@ -325,7 +326,7 @@ const server = createServer((socket) => {
 // Exit when there is nothing left to keep alive.
 let idleSince = Date.now();
 setInterval(() => {
-  const busy = conns.size > 0 || [...procs.values()].some((p) => !p.info.exit);
+  const busy = conns.size > 0 || [...procs.values()].some((p) => !p.info.exit && !p.info.service);
   if (busy) idleSince = Date.now();
   else if (Date.now() - idleSince > IDLE_EXIT) {
     log("idle, exiting");
@@ -352,6 +353,11 @@ probe.on("error", () => {
   http.listen(port, "127.0.0.1", () => {
     proxyPort = port;
     log(`agent proxy on http://127.0.0.1:${port}`);
+  });
+  if (existsSync(agentsPath)) unlinkSync(agentsPath);
+  agentsHttp.listen(agentsPath, () => {
+    chmodSync(agentsPath, 0o600);
+    log(`agents' pagent commands on ${agentsPath}`);
   });
   server.listen(socketPath, () => {
     writeFileSync(join(home, "daemon.pid"), String(process.pid));

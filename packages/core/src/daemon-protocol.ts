@@ -16,6 +16,7 @@ export type ProcInfo = {
   startedAt: number;
   status: TermStatus | null; // pty: the last OSC 7501 status, null if the TUI never reported one
   exit: { code: number | null; at: number } | null;
+  service?: boolean;
 };
 
 export type SpawnRequest = {
@@ -27,23 +28,31 @@ export type SpawnRequest = {
   env: Record<string, string>;
   cols?: number;
   rows?: number;
-  stdin?: string; // pipe: written to stdin, then closed
-  // pty: a TUI that reports no OSC 7501 but shows its state in the window title (OSC 0/2): regexes for working and
-  // blocked; any other title is idle. Supplied by the runner, so the daemon knows no harness.
-  titleStatus?: { working: string; blocked: string };
+  stdin?: string; // pipe: written to stdin, then closed (unless open)
+  // pipe: a long-lived process that takes more input (write) and can tell its state again itself, so its output
+  // is not kept for replay.
+  open?: boolean;
+  // A shared background process (e.g. Codex's app-server), not an agent's: it does not keep the daemon running.
+  service?: boolean;
   meta?: Record<string, unknown>;
   attach?: boolean; // follow it from the start (nothing it prints is missed)
 };
 
 const env = (k: string) => process.env[`PAGENT_${k}`];
 
-/** PAGENT_HOME (default ~/.pagent) holds the daemon's log and pid; the socket sits there when its path is short enough. */
+/**
+ * PAGENT_HOME (default ~/.pagent) holds the daemon's log and pid; its sockets sit there when their paths are short
+ * enough (a unix socket path is limited to ~104 bytes on macOS), else in the temp folder. `socket`: app servers talk
+ * to the daemon; `agents`: agents' `pagent` commands reach their app (through the daemon, like its HTTP proxy).
+ */
 export function daemonPaths() {
   const home = env("HOME") ?? join(homedir(), ".pagent");
-  const inHome = join(home, "daemon.sock");
-  // A unix socket path is limited to ~104 bytes on macOS.
-  const socket = inHome.length < 100 ? inHome : join(tmpdir(), `pagent-${createHash("sha1").update(home).digest("hex").slice(0, 10)}.sock`);
-  return { home, socket, log: join(home, "daemon.log") };
+  const sock = (name: string) => {
+    const inHome = join(home, `${name}.sock`);
+    const short = `pagent-${createHash("sha1").update(home).digest("hex").slice(0, 10)}${name === "daemon" ? "" : `-${name}`}.sock`;
+    return inHome.length < 100 ? inHome : join(tmpdir(), short);
+  };
+  return { home, socket: sock("daemon"), agents: sock("agents"), log: join(home, "daemon.log") };
 }
 
 /** An app's id in the daemon's proxy URLs (/a/<id>/...). */

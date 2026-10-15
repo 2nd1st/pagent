@@ -1,79 +1,13 @@
 // @pagent/bridge — everything a node's code imports. Only React primitives:
 // hooks declare (useAgent / useEmit / useData / useAsk), components render (<Chat>, imported nodes).
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties } from "react";
-import type { ChatTransport, UIMessage } from "ai";
+// What the host provides is in contract.ts, the declaration types in declarations.ts; this file has the hooks and the
+// imported nodes, and exports all of it.
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import type { UIMessage } from "ai";
+import { DataConflict, type AgentEvent, type AgentRef, type HostApi } from "./contract.ts";
 
-// ---------------------------------------------------------------- host contract
-
-export type AgentRef = { node: string; agent: string };
-
-/** A question an agent asked the user (via the node_ask_user tool), waiting for an answer. */
-export type Question = {
-  id: string;
-  node: string;
-  agent: string;
-  kind: "question" | "permission";
-  question: string;
-  detail?: string;
-  options: string[];
-  createdAt: number;
-};
-
-/** What an agent is doing right now. */
-export type AgentStatus = {
-  busy: boolean;
-  activity: string | null; // e.g. a tool name, "thinking", "writing"
-  questions: Question[];
-  session: { slashCommands?: string[]; model?: string; sessionId?: string | null; resume?: string | null };
-  /** The agent's native TUI, when one is open (<Terminal>): its state as the TUI reports it. */
-  terminal?: { open: boolean; state?: string; kind?: string; msg?: string };
-};
-
-/** Agent activity the host reports. */
-export type AgentEvent =
-  | { type: "run-start"; runId: string; user: UIMessage; clientId: string | null }
-  | { type: "activity"; runId: string; label: string }
-  | { type: "run-end"; runId: string }
-  | { type: "question"; question: Question }
-  | { type: "answered"; id: string }
-  | { type: "resync" };
-
-export type DataRead = { exists: boolean; content: unknown; version: string | null };
-export type DataWrite = { ok: true; version: string } | ({ ok: false } & DataRead);
-
-/** A write based on a version of the file that is no longer current; the hook already shows the current one. */
-export class DataConflict extends Error {
-  name = "DataConflict";
-  readonly file: string;
-  constructor(file: string) {
-    super(`${file} changed since it was read; showing the current version. Write with an updater (set(prev => …)) to merge.`);
-    this.file = file;
-  }
-}
-
-export type ChatOrigin = { chain: AgentRef[]; origin: string; clientId: string };
-
-/** What the host provides. Inline: direct calls. In an iframe it would be postMessage; nodes never know. */
-export type HostApi = {
-  ask(target: AgentRef, message: string, opts: { chain: AgentRef[]; origin: string }): Promise<string>;
-  history(target: AgentRef): Promise<UIMessage[]>;
-  chatTransport(target: AgentRef, opts: ChatOrigin): ChatTransport<UIMessage>;
-  status(target: AgentRef, opts?: { handle?: boolean }): Promise<AgentStatus>;
-  /** value: what a "use server" function returned. */
-  action(node: string, name: string, input?: unknown): Promise<{ ok: boolean; stdout: string; stderr: string; value?: unknown }>;
-  answer(questionId: string, answer: string): Promise<void>;
-  onAgent(target: AgentRef, cb: (e: AgentEvent) => void): () => void;
-  /** version: a hash of the file (null: it does not exist). */
-  readData(node: string, file: string): Promise<DataRead>;
-  /** With base, a file that changed since is not written; its current content comes back instead (ok: false). */
-  writeData(node: string, file: string, content: unknown, base?: string | null): Promise<DataWrite>;
-  onData(node: string, file: string, cb: () => void): () => void;
-  NodeFrame: ComponentType<{ path: string; from?: string; props: Record<string, unknown>; handlers: Record<string, unknown> }>;
-  /** Render another server's MCP App (an mcp:// import). Hosts without it show a placeholder. */
-  McpApp?: ComponentType<{ source: string; args?: Record<string, unknown> }>;
-  /** The agent's native TUI (Claude Code / Codex) in a terminal. Hosts without one show a placeholder. */
-  Terminal?: ComponentType<{ target: AgentRef; style?: CSSProperties }>;
-};
+export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type RateLimit, type SessionUsage, type SubagentInfo } from "./contract.ts";
+export type { Agents, AgentSpec, Config, McpServer, Tools, Triggers } from "./declarations.ts";
 
 export const HostContext = createContext<HostApi | null>(null);
 
@@ -83,17 +17,21 @@ export function provideHost(host: HostApi) {
   currentHost = host;
 }
 
-/** What a page gets for a function of a "use server" file: a call to that node's action, resolving to its return value. */
-export function serverFunction(node: string, name: string) {
+/**
+ * What a page gets for a function of a "use server" file (`import { add } from "./actions"`, or another node's,
+ * "~/notes/actions"): a call to that node's action, as the page that imports it. It resolves to the function's return
+ * value (JSON), or rejects with an Error carrying the message it threw.
+ */
+export function serverFunction(node: string, name: string, page: string) {
   return async (input?: unknown): Promise<any> => {
     if (!currentHost) throw new Error(`${name}: no pagent host`);
-    const r = await currentHost.action(node, name, input);
-    if (!r.ok) throw new Error(r.stderr || `${name} failed`);
+    const r = await currentHost.action(node, name, input, page);
+    if (!r.ok) throw new Error(r.error);
     return r.value;
   };
 }
 
-/** The node a piece of UI belongs to, plus the agents an `ask` bubbles through (nearest first). */
+/** The node a piece of UI belongs to, and the agents at it and above it (nearest first): where an `ask` from here goes. */
 export type Scope = {
   path: string;
   agents: string[]; // agents this node declares (export const agents), in order
@@ -107,75 +45,25 @@ export function useHost(): HostApi {
   if (!h) throw new Error("pagent used outside a pagent host");
   return h;
 }
+// While a hook imported from another node runs, the hooks it calls see that node (nodeHook).
+let hookScope: Scope | null = null;
+
 export function useScope(): Scope {
-  const s = useContext(ScopeContext);
-  if (!s) throw new Error("pagent used outside a node");
-  return s;
+  const s = useContext(ScopeContext); // called either way: the hook order stays the same
+  const scope = hookScope ?? s;
+  if (!scope) throw new Error("pagent used outside a node");
+  return scope;
 }
-
-// ---------------------------------------------------------------- declarations
-
-/**
- * What a node exports to declare its agents. The key is the agent's name.
- *   export const agents = { ops: { cli: "claude", cwd: "/srv/ops", sessionId: "…" } } satisfies Agents;
- */
-export type AgentSpec = {
-  /** Which harness runs it. */
-  cli?: "claude" | "codex";
-  /** Or a runner by name (advanced). */
-  runner?: string;
-  /** "app" (default): part of the app, answers through data and pages. "session": the node is a conversation. */
-  kind?: "app" | "session";
-  /** Adopt an existing native session (one started in a terminal). Implies kind "session" unless set. */
-  sessionId?: string;
-  /** Run the harness in this folder (e.g. where an adopted session lives). Defaults to the node's folder. */
-  cwd?: string;
-  model?: string;
-  effort?: string; // reasoning effort (codex)
-  permissionMode?: string;
-  /**
-   * true (default): once its TUI is open, it stays open — the session keeps its process, like an ADE.
-   * false, or a number of minutes (false = 10): load on demand — the TUI closes when nobody watches it and the
-   * agent has been quiet that long; the next message resumes the session.
-   */
-  resident?: boolean | number;
-  /**
-   * Claude Code agents take their turns in their own TUI (default): one process per session, the same one a
-   * <Terminal> shows. false: each turn is a headless `claude -p` run instead.
-   */
-  tui?: boolean;
-  skills?: string[];
-  mcps?: string[];
-};
-export type Agents = Record<string, AgentSpec>;
-
-/** Deterministic actions: a shell command each, no LLM. Input arrives as $PAGENT_INPUT (JSON). */
-export type Actions = Record<string, string | { run: string; cwd?: string }>;
-
-/**
- * The app acting on its own: when (cron / watch a data file / webhook POST /hooks/<node>/<name>), do what
- * (run an action; ask an agent; both = ask only if the action printed something, with its output).
- *   export const triggers = { check: { cron: "*\/10 * * * *", run: "status", ask: "These need a look" } } satisfies Triggers;
- */
-export type Triggers = Record<string, { cron?: string; watch?: string; webhook?: boolean; run?: string; ask?: string; agent?: string }>;
-
-/**
- * Tools the page itself implements with useTool: MCP tools for agents and for any host showing the page.
- * input: { field: "string" | "number" | "integer" | "boolean" | "object" | "array" | "a|b|c" (add ? if optional) }, or a JSON Schema.
- */
-export type Tools = Record<string, string | { description: string; input?: Record<string, unknown> }>;
 
 // ---------------------------------------------------------------- hooks
 
-/** A message channel to one agent. `chain` is where its asks escalate to (itself first). */
-export type AgentHandle = AgentRef & { readonly __agent: true; readonly chain: AgentRef[]; ask(message: string): Promise<string> };
+/** A message channel to one agent. */
+export type AgentHandle = AgentRef & { readonly __agent: true; ask(message: string): Promise<string> };
 
 const isHandle = (v: unknown): v is AgentHandle => !!v && typeof v === "object" && (v as AgentHandle).__agent === true;
 
 function makeHandle(host: HostApi, scope: Scope, ref: AgentRef): AgentHandle {
-  const local = ref.node === scope.path;
-  const chain = local ? [ref, ...scope.chain.filter((r) => !(r.node === ref.node && r.agent === ref.agent))] : [ref];
-  return { ...ref, __agent: true as const, chain, ask: (message: string) => host.ask(ref, message, { chain, origin: scope.path }) };
+  return { ...ref, __agent: true as const, ask: (message: string) => host.ask(ref, message, { origin: scope.path }) };
 }
 
 /** Which agent a name means here: undefined → this node's only agent (or the nearest above); "x" → this node's x; "/p#x" → any node's x. */
@@ -220,7 +108,22 @@ export function useResolvedAgent(agent?: AgentHandle | string): AgentHandle {
   return handle;
 }
 
-/** Ask the nearest agent up the tree (this node's, else a layout's or an ancestor's). It may escalate further. */
+/**
+ * Every event of an agent as it comes, one call each, in order: a run starting and ending, each activity, a question
+ * asked or answered, a status or history to reload. useAgentStatus keeps only the latest activity, and React renders
+ * activity that arrives together (tool calls made side by side) once, with the last: a page that reacts to each one
+ * (each file edited, each screenshot) listens here. An activity event carries the activity as the host gives it (a
+ * tool call is told when it starts, and again once its input is known).
+ */
+export function useAgentEvents(onEvent: (e: AgentEvent) => void, agent?: AgentHandle | string): void {
+  const target = useResolvedAgent(agent);
+  const host = useHost();
+  const latest = useRef(onEvent);
+  latest.current = onEvent;
+  useEffect(() => host.onAgent(target, (e) => latest.current(e)), [host, target.node, target.agent]);
+}
+
+/** Ask the nearest agent up the tree (this node's, else a layout's or an ancestor's). It may hand it further up (`pagent tell ..`). */
 export function useAsk(): (message: string) => Promise<string> {
   const scope = useScope();
   const host = useHost();
@@ -228,7 +131,7 @@ export function useAsk(): (message: string) => Promise<string> {
     (message: string) => {
       const [nearest] = scope.chain;
       if (!nearest) return Promise.reject(new Error("no agent above this node"));
-      return host.ask(nearest, message, { chain: scope.chain, origin: scope.path });
+      return host.ask(nearest, message, { origin: scope.path });
     },
     [host, scope],
   );
@@ -249,9 +152,9 @@ export function useEmit<T = unknown>(event: string): (payload: T) => void {
   );
 }
 
-/** A data file in this node's folder. Live: re-reads when anyone (UI, agent, git) changes it. */
 /**
- * A data file of this node, live. `set(value)` or `set(prev => next)`. Every write names the version of the file it
+ * A data file of this node, live — or of another node of the app, by its path from the app's root:
+ * `useData("~/reading/items.json")` (a dashboard showing what other pages hold). `set(value)` or `set(prev => next)`. Every write names the version of the file it
  * was computed from, so a page never writes over changes it has not seen (another tab, an agent, a trigger):
  * - an updater runs on the current content, and runs again if the file changed meanwhile;
  * - a plain value counts as computed from the render it came from. If the file changed since (or the page had not
@@ -264,6 +167,8 @@ export function useData<T = unknown>(
 ): [T | undefined, (next: T | ((prev: T | undefined) => T)) => Promise<void>, boolean] {
   const scope = useScope();
   const host = useHost();
+  const at = file.startsWith("~/") ? file.slice(1).replace(/\/[^/]*$/, "") || "/" : scope.path; // whose data
+  if (file.startsWith("~/")) file = file.slice(file.lastIndexOf("/") + 1);
   type Snap = { content: T | undefined; version: string | null; loaded: boolean };
   const [snap, setSnap] = useState<Snap>({ content: initial, version: null, loaded: false });
   const latest = useRef<Snap>(snap); // what the server last told us (or we last wrote)
@@ -281,19 +186,19 @@ export function useData<T = unknown>(
     let alive = true;
     const load = () => {
       const seen = writes.current;
-      return host.readData(scope.path, file).then((r) => {
+      return host.readData(at, file).then((r) => {
         if (!alive || writes.current !== seen) return;
         if (r.version !== latest.current.version) superseded.current.clear(); // someone else wrote
         show({ content: (r.exists ? r.content : initial) as T | undefined, version: r.version, loaded: true });
       });
     };
     firstRead.current = load();
-    const off = host.onData(scope.path, file, () => void load());
+    const off = host.onData(at, file, () => void load());
     return () => {
       alive = false;
       off();
     };
-  }, [host, scope.path, file]);
+  }, [host, at, file]);
 
   const write = useCallback(
     (next: T | ((prev: T | undefined) => T)) => {
@@ -310,7 +215,7 @@ export function useData<T = unknown>(
           else base = superseded.current.has(snap.version) ? cur.version : snap.version;
           const content = updater ? updater(cur.content) : (next as T);
           setSnap({ content, version: cur.version, loaded: true }); // shown at once; `latest` waits for the server
-          const r = await host.writeData(scope.path, file, content, base);
+          const r = await host.writeData(at, file, content, base);
           writes.current++;
           if (r.ok) {
             superseded.current.add(base);
@@ -326,23 +231,9 @@ export function useData<T = unknown>(
       queue.current = p.catch(() => {});
       return p;
     },
-    [host, scope.path, file, snap],
+    [host, at, file, snap],
   );
   return [snap.content, write, snap.loaded];
-}
-
-/** Run an action declared with `export const actions`; resolves to its stdout. */
-export function useAction(name: string): (input?: unknown) => Promise<string> {
-  const scope = useScope();
-  const host = useHost();
-  return useCallback(
-    async (input?: unknown) => {
-      const r = await host.action(scope.path, name, input);
-      if (!r.ok) throw new Error(r.stderr || `action ${name} failed`);
-      return r.stdout;
-    },
-    [host, scope.path, name],
-  );
 }
 
 // Page tools live where the page is rendered; the host calls them by node path and name.
@@ -395,8 +286,12 @@ export function useNode(): { path: string } {
 
 const instanceKey = (key: unknown) => String(key).replace(/[^A-Za-z0-9_-]/g, "_") || "_";
 
-/** `import Mailbox from "~/component/mailbox"` compiles to this. Each rendered instance is a fork. */
-export function nodeComponent(source: string): ComponentType<Record<string, unknown>> {
+/**
+ * `import Mailbox from "~/component/mailbox"` compiles to this. Each rendered instance is a fork, unless the node
+ * declares itself shared (`export const config = { shared: true }`) or the instance says `shared`: then it is the
+ * node itself. The source is a node of this app ("~/…"), or another server's MCP App ("mcp://…", in an iframe).
+ */
+export function nodeComponent(source: string, opts: { shared?: boolean } = {}): ComponentType<Record<string, unknown>> {
   const NodeInstance = (allProps: Record<string, unknown>) => {
     const scope = useScope();
     const host = useHost();
@@ -405,15 +300,44 @@ export function nodeComponent(source: string): ComponentType<Record<string, unkn
     const handlers: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(rest)) (/^on[A-Z]/.test(k) ? handlers : props)[k] = v;
 
-    if (source.startsWith("mcp://")) return host.McpApp ? <host.McpApp source={source} args={props} /> : <div style={{ opacity: 0.6 }}>MCP App {source} (not supported by this host)</div>;
-    const sharedOk = shared && source.startsWith("~/");
-    const path = sharedOk ? source.slice(1) : `${scope.path === "/" ? "" : scope.path}/.mounts/${instanceKey(__key)}`;
-    return <host.NodeFrame path={path} from={sharedOk ? undefined : source} props={props} handlers={handlers} />;
+    if (source.startsWith("mcp://")) return <host.McpApp source={source} args={props} />;
+    const isShared = !!(shared || opts.shared);
+    const path = isShared ? source.slice(1) : `${scope.path === "/" ? "" : scope.path}/.mounts/${instanceKey(__key)}`;
+    return <host.NodeFrame path={path} from={isShared ? undefined : source} props={props} handlers={handlers} />;
   };
   NodeInstance.displayName = `Node(${source})`;
   return NodeInstance;
 }
 
+/**
+ * `import { useCalculator } from "~/calculator"` compiles to this: the node's own hook, run as that node wherever it
+ * is called. Its useData reads that node's files, its server functions are that node's, useAgent()
+ * is that node's agent; an ask with no agent there goes up the caller's tree.
+ */
+export function nodeHook<H extends (...args: any[]) => any>(path: string, agents: string[], hook: H): H {
+  const bound = (...args: unknown[]) => {
+    const caller = useScope();
+    const scope = useMemo<Scope>(
+      () => ({
+        path,
+        agents,
+        chain: [...(agents.length ? [{ node: path, agent: agents[0] }] : []), ...caller.chain.filter((r) => r.node !== path)],
+        handlers: {},
+      }),
+      [caller],
+    );
+    const outer = hookScope;
+    hookScope = scope;
+    try {
+      return hook(...args);
+    } finally {
+      hookScope = outer;
+    }
+  };
+  return bound as H;
+}
+
 export { Chat, useAgentChat } from "./chat.tsx";
-export { AgentBar, AgentConsole, AgentFab, QuestionCard, Terminal, useAgentStatus } from "./agent-ui.tsx";
+export { NodeCard, pageUrl, parseCard, propsFromQuery, splitCards, type CardRef, type CardsShown } from "./cards.tsx";
+export { AgentBar, AgentConsole, AgentFab, QuestionCard, Terminal, doingOf, quietNote, useAgentStatus } from "./agent-ui.tsx";
 export type { UIMessage };

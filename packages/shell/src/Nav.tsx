@@ -1,0 +1,357 @@
+// Navigation: the app's pages by what they call themselves (`export const metadata = { title }`), a rail listing them
+// with what their agents are doing, the trail of titles above a page, and notifications when an agent you are not
+// looking at finishes or starts waiting for you.
+//
+// The rail is where every agent of the app is seen at a glance, on every page: what it is doing now or the question it
+// waits on, the last thing it said, when it last talked. A page does not need its own overview of the app's agents.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { quietNote, type AgentStatus } from "@pagent/bridge";
+import { api, clientId, onHostEvent, qs } from "./host.ts";
+import { go } from "./nav.ts";
+
+export type Page = { path: string; title: string; titled: boolean; agents: string[]; order?: number };
+
+/** The app's pages (title, agents), reloaded when code changes (a page added, a title changed). */
+export function usePages(): Page[] | null {
+  const [pages, setPages] = useState<Page[] | null>(null);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => api<{ pages: Page[] }>("/_pagent/pages").then((r) => setPages(r.pages), () => {});
+    load();
+    const off = onHostEvent((e) => {
+      if (e.type !== "code" && e.type !== "resync") return;
+      clearTimeout(timer);
+      timer = setTimeout(load, 300);
+    });
+    return () => (clearTimeout(timer), off());
+  }, []);
+  return pages;
+}
+
+/** An agent at a glance. */
+export type Glance = {
+  state: "idle" | "working" | "waiting";
+  /** Working: what it is doing right now, in a few words ("Running a command", what its TUI reports). */
+  doing: string | null;
+  /** Working: the call behind it ("Bash pnpm test"), for a closer look. */
+  detail?: string | null;
+  /** Waiting: the question it waits on (asked in the app, or a prompt in its terminal). */
+  question: string | null;
+  /** The end of its last reply, one line: where it stopped. */
+  said: { text: string; at: string | null } | null;
+  /** When it last talked. */
+  lastAt: string | null;
+};
+
+const glanceOf = (s: AgentStatus): Glance => {
+  const last = { said: s.said ?? null, lastAt: s.lastAt ?? null };
+  // A permission says what it asks about ("Allow Bash? pnpm test"), not only "Allow Bash?".
+  const q = s.questions[0];
+  const asking = q ? (q.kind === "permission" && q.detail ? `${q.question} ${q.detail.trim().split("\n")[0]}` : q.question) : null;
+  if (asking) return { ...last, state: "waiting", doing: null, question: asking };
+  if (s.terminal?.state === "blocked") return { ...last, state: "waiting", doing: null, question: s.doing?.label ?? s.activity ?? "waiting in its terminal" };
+  if (!s.busy) return { ...last, state: "idle", doing: null, question: null };
+  const quiet = quietNote(s);
+  return { ...last, state: "working", doing: [s.doing?.label ?? s.activity, quiet].filter(Boolean).join(" · "), detail: s.activity, question: null };
+};
+
+/** Every agent's glance, by "node#agent", live. Transitions go to `onChange` (for notifications). */
+export function useStatuses(pages: Page[] | null, onChange?: (key: string, before: Glance, after: Glance) => void): Map<string, Glance> {
+  const [statuses, setStatuses] = useState(new Map<string, Glance>());
+  const known = useRef(new Map<string, Glance>());
+  const changed = useRef(onChange);
+  changed.current = onChange;
+  const keys = useMemo(() => (pages ?? []).flatMap((p) => p.agents.map((a) => `${p.path}#${a}`)).sort().join(","), [pages]);
+  useEffect(() => {
+    if (!keys) return;
+    const all = keys.split(",");
+    const timers = new Map<string, ReturnType<typeof setTimeout>>();
+    let alive = true;
+    const load = (key: string) => {
+      const [node, agent] = key.split("#");
+      api<AgentStatus>(`/_pagent/agent-status?${qs({ node, agent, said: "1" })}`).then(
+        (s) => {
+          if (!alive) return;
+          const next = glanceOf(s);
+          // Found working on the first look: that counts as the start of its work.
+          const before = known.current.get(key) ?? (next.state === "working" ? { ...next, state: "idle" as const, doing: null } : undefined);
+          known.current.set(key, next);
+          if (before && (before.state !== next.state || before.question !== next.question)) changed.current?.(key, before, next);
+          setStatuses(new Map(known.current));
+        },
+        () => {},
+      );
+    };
+    // An agent at work sends many events (each tool call, each state its TUI reports): one look for a burst of them.
+    const soon = (key: string) => {
+      clearTimeout(timers.get(key));
+      timers.set(key, setTimeout(() => load(key), 300));
+    };
+    all.forEach(load);
+    const off = onHostEvent((e) => {
+      if (e.type === "resync") all.forEach(soon);
+      else if (e.type === "agent" && all.includes(`${e.node}#${e.agent}`)) soon(`${e.node}#${e.agent}`);
+    });
+    // One that is quiet sends nothing: a look every minute says for how long (and that it may be stuck).
+    const quiet = setInterval(() => all.forEach((k) => known.current.get(k)?.state === "working" && load(k)), 60_000);
+    return () => {
+      alive = false;
+      timers.forEach(clearTimeout);
+      clearInterval(quiet);
+      off();
+    };
+  }, [keys]);
+  return statuses;
+}
+
+/** A page's glance: its most pressing agent's state, and the latest words of any of them. */
+const pageGlance = (p: Page, statuses: Map<string, Glance>): Glance | null => {
+  if (!p.agents.length) return null;
+  const all = p.agents.map((a) => statuses.get(`${p.path}#${a}`)).filter((g): g is Glance => !!g);
+  const lead = all.find((g) => g.state === "waiting") ?? all.find((g) => g.state === "working") ?? all[0];
+  if (!lead) return { state: "idle", doing: null, question: null, said: null, lastAt: null };
+  const time = (g: Glance) => Date.parse(g.lastAt ?? g.said?.at ?? "") || 0;
+  const latest = all.reduce((a, b) => (time(b) > time(a) ? b : a));
+  return { ...lead, said: lead.said ?? latest.said, lastAt: latest.lastAt ?? lead.lastAt };
+};
+
+const stateText = { idle: "idle", working: "working", waiting: "waiting for you" };
+
+export function Dot({ glance, unread }: { glance: Glance | null; unread?: boolean }) {
+  if (!glance) return <span className="pagent-navdot" data-state="none" />;
+  const state = glance.state === "idle" && unread ? "unread" : glance.state;
+  return <span className="pagent-navdot" data-state={state} title={state === "unread" ? "said something since you looked" : stateText[glance.state]} />;
+}
+
+/** "now", "4m", "3h", "2d": how long ago, short enough for the rail. */
+function ago(iso: string | null | undefined, now: number): string {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return "";
+  const m = Math.max(0, now - t) / 60_000;
+  return m < 1 ? "now" : m < 60 ? `${Math.floor(m)}m` : m < 48 * 60 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+}
+
+function useNow(ms = 30_000): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+const SEEN_KEY = "pagent.seen";
+const readSeen = (): Record<string, number> => {
+  try {
+    return JSON.parse(localStorage.getItem(SEEN_KEY) ?? "{}") ?? {};
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * When each page was last looked at (in this browser): the page in front counts as read while the window is. A page
+ * seen for the first time counts as read, so a new browser does not start with everything marked.
+ */
+function useSeen(current: string, pages: Page[], statuses: Map<string, Glance>): Record<string, number> {
+  const [seen, setSeen] = useState(readSeen);
+  useEffect(() => {
+    const mark = () => {
+      if (document.visibilityState !== "visible") return;
+      const next = { ...readSeen() };
+      const now = Date.now();
+      for (const p of pages) next[p.path] ??= now;
+      next[current] = now;
+      try {
+        localStorage.setItem(SEEN_KEY, JSON.stringify(next));
+      } catch {}
+      setSeen(next);
+    };
+    mark();
+    document.addEventListener("visibilitychange", mark);
+    addEventListener("focus", mark);
+    return () => (document.removeEventListener("visibilitychange", mark), removeEventListener("focus", mark));
+  }, [current, pages, statuses]);
+  return seen;
+}
+
+type Row = { label: string; depth: number } | { page: Page; depth: number };
+
+/**
+ * The pages below the home, as a tree: siblings by their own `metadata.order` (lower first), then by title. Folders on
+ * the way to a page that are not pages themselves (/cards for /cards/todo) show as labels.
+ */
+function railRows(pages: Page[]): Row[] {
+  type T = { seg: string; page?: Page; kids: Map<string, T> };
+  const top: T = { seg: "", kids: new Map() };
+  for (const p of pages) {
+    if (p.path === "/") continue;
+    let at = top;
+    for (const seg of p.path.split("/").filter(Boolean)) {
+      if (!at.kids.has(seg)) at.kids.set(seg, { seg, kids: new Map() });
+      at = at.kids.get(seg)!;
+    }
+    at.page = p;
+  }
+  const name = (t: T) => (t.page?.title ?? t.seg.replace(/[-_]+/g, " ")).toLowerCase();
+  const rows: Row[] = [];
+  const walk = (t: T, depth: number) => {
+    const kids = [...t.kids.values()].sort((a, b) => (a.page?.order ?? Infinity) - (b.page?.order ?? Infinity) || name(a).localeCompare(name(b)));
+    for (const k of kids) {
+      rows.push(k.page ? { page: k.page, depth } : { label: k.seg.replace(/[-_]+/g, " "), depth });
+      walk(k, depth + 1);
+    }
+  };
+  walk(top, 0);
+  return rows;
+}
+
+/** A reply that ends asking something: it is waiting on the user too, just not through a card. */
+const asks = (text: string) => /[?？]\s*$/.test(text);
+
+/**
+ * The pages of the app, as a tree of titles. A page with agents shows, without opening it: its state (a dot), what it
+ * is doing or the question it waits on, the last thing it said, and when it last talked.
+ */
+export function Rail({ pages, statuses, current, onPick }: { pages: Page[]; statuses: Map<string, Glance>; current: string; onPick?: () => void }) {
+  const root = pages.find((p) => p.path === "/");
+  const rows = useMemo(() => railRows(pages), [pages]);
+  const now = useNow();
+  const seen = useSeen(current, pages, statuses);
+  const item = (p: Page, depth: number, className = "") => {
+    const g = pageGlance(p, statuses);
+    const here = p.path === current;
+    const saidAt = Date.parse(g?.said?.at ?? "") || 0;
+    const unread = !here && !!saidAt && saidAt > (seen[p.path] ?? Infinity);
+    const now1 = g?.state === "waiting" ? g.question ?? "waiting for you" : g?.state === "working" ? g.doing ?? "working" : null;
+    const when = ago(g?.lastAt ?? g?.said?.at, now);
+    return (
+      <a key={p.path} href={p.path} className={`pagent-railitem ${className}`} aria-current={here ? "page" : undefined} data-unread={unread || undefined} style={{ paddingLeft: 8 + depth * 14 }} onClick={onPick}>
+        <span className="pagent-railrow">
+          <Dot glance={g} unread={unread} />
+          <span className="pagent-railtitle">{p.title}</span>
+          {when && g?.state !== "working" && <time className="pagent-railtime" dateTime={g?.lastAt ?? g?.said?.at ?? undefined} title={new Date(g?.lastAt ?? g?.said?.at ?? 0).toLocaleString()}>{when}</time>}
+        </span>
+        {now1 && <span className="pagent-railnote" data-state={g!.state} title={g!.state === "working" && g!.detail && g!.detail !== now1 ? `${now1}\n${g!.detail}` : now1}>{now1}</span>}
+        {g?.said && (
+          <span className="pagent-railsaid" data-asks={(g.state === "idle" && asks(g.said.text)) || undefined} title={g.said.text}>
+            {g.said.text}
+          </span>
+        )}
+      </a>
+    );
+  };
+  return (
+    <nav className="pagent-rail" aria-label="Pages" data-pagent-chrome>
+      {root && item(root, 0, "pagent-railhome")}
+      <div className="pagent-raillist">
+        {rows.map((r) => ("page" in r ? item(r.page, r.depth) : <div key={"label:" + r.label + r.depth} className="pagent-raillabel" style={{ paddingLeft: 23 + r.depth * 14 }}>{r.label}</div>))}
+      </div>
+    </nav>
+  );
+}
+
+/** Where the page is: the titles from the app's home down to it; the ones above it are links. */
+export function Crumbs({ path, pages }: { path: string; pages: Page[] | null }) {
+  const byPath = new Map((pages ?? []).map((p) => [p.path, p]));
+  const segs = path.split("/").filter(Boolean);
+  const trail = ["/", ...segs.map((_, i) => "/" + segs.slice(0, i + 1).join("/"))];
+  return (
+    <ol className="pagent-crumbs">
+      {trail.map((p, i) => {
+        const page = byPath.get(p);
+        const title = page?.title ?? (p === "/" ? "Home" : segs[i - 1].replace(/[-_]+/g, " "));
+        const last = i === trail.length - 1;
+        return (
+          <li key={p}>
+            {last ? <span aria-current="page">{title}</span> : page ? <a href={p}>{title}</a> : <span className="pagent-crumb-dir">{title}</span>}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** The browser tab says where you are: "Health · Home". */
+export function useDocumentTitle(path: string, pages: Page[] | null) {
+  useEffect(() => {
+    if (!pages) return;
+    const here = pages.find((p) => p.path === path)?.title;
+    const home = pages.find((p) => p.path === "/")?.title ?? "pagent";
+    document.title = here && path !== "/" ? `${here} · ${home}` : here ?? home;
+  }, [path, pages]);
+}
+
+// ---------------------------------------------------------------- notifications
+
+const NOTIFY_KEY = "pagent.notify";
+const FOCUS_KEY = "pagent.focused";
+const store = {
+  get: (k: string) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set: (k: string, v: string) => {
+    try {
+      localStorage.setItem(k, v);
+    } catch {}
+  },
+};
+
+// Of all the app's open tabs, the one last in front notifies (so two tabs do not both ring).
+const markFocused = () => store.set(FOCUS_KEY, clientId);
+if (typeof window !== "undefined") {
+  addEventListener("focus", markFocused);
+  if (document.hasFocus()) markFocused();
+}
+
+type Permission = "on" | "off" | "denied" | "unsupported";
+const supported = () => typeof Notification !== "undefined";
+
+/** Notifications on or off (per browser), and the switch. Turning them on asks the browser's permission. */
+export function useNotifySetting(): [Permission, () => void] {
+  const read = (): Permission => (!supported() ? "unsupported" : Notification.permission === "denied" ? "denied" : Notification.permission === "granted" && store.get(NOTIFY_KEY) === "on" ? "on" : "off");
+  const [state, setState] = useState<Permission>(read);
+  const toggle = () => {
+    if (!supported()) return;
+    if (state === "on") return (store.set(NOTIFY_KEY, "off"), setState("off"));
+    void Notification.requestPermission().then((p) => {
+      if (p === "granted") store.set(NOTIFY_KEY, "on");
+      setState(read());
+    });
+  };
+  return [state, toggle];
+}
+
+const busySince = new Map<string, number>();
+
+/**
+ * An agent finished a turn, or started waiting for the user, while its page is not in front: a system notification
+ * (the browser's, which macOS shows like any other). Clicking it opens the agent's page. Short blips (under a few
+ * seconds of work) do not count.
+ */
+export function notifyChange(key: string, before: Glance, after: Glance, pages: Page[] | null) {
+  if (after.state === "working") return void busySince.set(key, Date.now());
+  const worked = Date.now() - (busySince.get(key) ?? Date.now());
+  busySince.delete(key);
+  if (!supported() || Notification.permission !== "granted" || store.get(NOTIFY_KEY) !== "on") return;
+  if ((store.get(FOCUS_KEY) ?? clientId) !== clientId) return;
+  const [node, agent] = key.split("#");
+  const inFront = document.visibilityState === "visible" && document.hasFocus() && location.pathname === node;
+  if (inFront) return;
+  let body: string;
+  if (after.state === "waiting" && before.state !== "waiting") body = after.question ? `Waiting for you: ${after.question}` : "Waiting for you";
+  else if (before.state === "working" && after.state === "idle" && worked >= 4000) body = "Finished";
+  else return;
+  const page = pages?.find((p) => p.path === node);
+  const title = page && page.agents.length === 1 ? page.title : `${page?.title ?? node} · ${agent}`;
+  const n = new Notification(title, { body, tag: key });
+  n.onclick = () => {
+    window.focus();
+    if (location.pathname !== node) go(node);
+    n.close();
+  };
+}

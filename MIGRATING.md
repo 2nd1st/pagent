@@ -1,0 +1,57 @@
+# Migrating to pagent 0.1.0
+
+0.1.0 is a breaking version. The engine now has two planes: a **private** one for this machine's user and the app's own
+agents (`/_pagent/*` for the browser, `/_cli` for the `pagent` command), and a **public** one the app writes itself
+(`api/**/route.ts`, also served as MCP tools at `/mcp`). Nothing is kept for compatibility: old forms are compile errors
+that say what to write instead. Open the app's pages (or have an agent run `pagent status <node>` on each) and follow the errors; the list below
+is everything that changed.
+
+## What changed
+
+| Before | Now |
+|---|---|
+| The engine's HTTP under `/api/*` | `/_pagent/*` (internal: pages use hooks, never these URLs). `/api/**` is only the app's own routes |
+| No public HTTP of the app's own | `api/<path>/route.ts`, as in Next.js: `export async function POST(input: { text: string }, { caller }) { … }` (typed JSON in and out) or `POST(req: Request)` (raw, returns a `Response`). `[id]` and `[...path]` folders are params |
+| `/mcp?node=…`: any page as an MCP App, `ui_*`, `ask_*`, `action_*`, `node_screen_*` tools | `/mcp` serves the app's routes as tools (`api_ideas_post`), stateless, nothing else. To give another host a UI, write a page or a route for it |
+| Webhook triggers (`webhook:`, `POST /hooks/<node>/<name>`) | A route: `api/deploy/route.ts` that runs an action or `tell()`s an agent |
+| A trigger with `ask` (and `agent`): the agent woken with the action's output | A trigger is when + an action: `{ cron \| every \| watch \| app, run: "<action>" }`. The action wakes an agent itself: `await tell("/node#agent", "…")` from `"pagent/server"`, once per new thing (the trigger no longer waits for the agent, so it runs again on the next tick or change). `watch` may name another node's file: `"~/worker/tasks.json"` |
+| `pagent trigger <node> <name>` | Test a trigger by running its action: `pagent run <node> <action>` |
+| `pagent send <agent> "…"` | `pagent tell <agent> "…"`; also `pagent tell <URL> "…"` to another app's message route |
+| `pagent escalate "…"` | `pagent tell .. "…"`: the nearest agent above (its answer comes back to you, like any tell) |
+| String actions, `export const actions = { status: "incus list" }` | An action is only an exported **async** function of a `"use server"` file in the node folder; to run a command, run it from the function (`execFile`) |
+| `useAction("status")` in a page | `import { status } from "./actions"` (or `"~/other-node/actions"`), then `await status(input)`, typed as written |
+| An action's failure as stderr text | The page's promise rejects with an `Error` of the message the function threw; the stack stays on the server (`pagent run` shows it to agents) |
+| Agent `kind: …`, `session: "…"` | Errors: `kind` is gone (every agent is the same kind of thing), the session to adopt is `sessionId` |
+| `allow: ["run /wechat", "app read …", "mcp__app__…"]` | Errors: `allow` holds only the harness's own permission rules (`"WebFetch"`, `"Bash(curl:*)"`); `pagent` commands are pre-approved |
+| Messages to agents with `(from …)` built into the text | Every message carries a structured caller (`user`, `page`, `agent`, `trigger`, `pagent`, `external`, with the `via` chain); the `(from …)` line is made from it |
+| Agents reachable from outside through MCP | Closed unless the app opens a message route: `api/<node>/message/route.ts` with `export { inbox as POST } from "pagent/server"` (or your own handler: check `caller` first) |
+
+## How to migrate an app
+
+1. **Triggers.** For each trigger with `ask`: keep the check action, and make it (or a small new action the trigger runs)
+   call `tell()` with the old `ask` text and what the check found. Remember what it told about (a data file of the node)
+   so it tells once per new thing, not on every tick.
+   ```ts
+   // inbox/actions.ts
+   "use server";
+   import { data, tell } from "pagent/server";
+   export async function check() {
+     const fresh = newMail().filter((m) => !data.read<string[]>("told.json", [])!.includes(m.id));
+     if (!fresh.length) return "nothing new";
+     data.write("told.json", [...data.read<string[]>("told.json", [])!, ...fresh.map((m) => m.id)]);
+     await tell("/inbox#triage", `New mail; sort it:\n\n${fresh.map((m) => m.subject).join("\n")}`);
+     return `told about ${fresh.length}`;
+   }
+   ```
+   ```tsx
+   export const triggers = { mail: { every: "5m", run: "check" } } satisfies Triggers;
+   ```
+2. **String actions and `useAction`.** Move each command into `actions.ts` (`"use server"`) as an async function, and
+   import it in the page instead of `useAction`. Drop the `Actions` type import.
+3. **Words in instructions.** In `_agent.md` and other agent instructions: `pagent send` → `pagent tell`,
+   `pagent escalate` → `pagent tell ..`, `pagent trigger` → `pagent run <node> <action>`.
+4. **Agent declarations.** Remove `kind`; rename `session` to `sessionId`; keep only harness rules in `allow`.
+5. **Webhooks and outside callers.** A `webhook` trigger becomes `api/<path>/route.ts`; a script that called the
+   engine's `/api/*` or `/mcp?node=` calls a route of yours instead.
+6. **Restart once.** `pagent daemon restart` (agents' terminals and turns started with the old paths), restart
+   `pagent serve`, and reload open pages.

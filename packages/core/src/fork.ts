@@ -1,17 +1,15 @@
-// Rendering an imported node creates an instance = a fork under the parent's .mounts/<key>/.
-// Trust is decided at fork time (like npm install): from then on the fork is ours.
+// Rendering an imported node creates an instance = a fork under the parent's .mounts/<key>/. The source is always a
+// node of this app ("~/path"): a node from elsewhere is installed into the app first (install.ts), never forked from
+// outside it.
 import { cpSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { engine } from "./engine.ts";
+import { INSTALL_SOURCE, installSourceError } from "./extract.ts";
 import { CODE, codeFiles, hasFile, isNode, normPath } from "./tree.ts";
 
-export function sourceDir(root: string, source: string): { dir: string; inTree: string | null } {
-  if (source.startsWith("~/")) {
-    const path = normPath(source.slice(1));
-    return { dir: join(root, path), inTree: path };
-  }
-  if (source.startsWith("official:")) return { dir: join(engine.components, source.slice("official:".length)), inTree: null };
-  throw new Error(`unsupported node source "${source}": import a node of this app ("~/path") or an official one ("official:name")`);
+function sourceDir(root: string, source: string): string {
+  if (source.startsWith("~/")) return join(root, normPath(source.slice(1)));
+  if (INSTALL_SOURCE.test(source)) throw new Error(installSourceError(source));
+  throw new Error(`unsupported node source "${source}": import a node of this app ("~/path")`);
 }
 
 const copyFiles = (from: string, to: string, files: string[]) => {
@@ -23,7 +21,7 @@ const copyFiles = (from: string, to: string, files: string[]) => {
 
 export async function ensureFork(root: string, instancePath: string, source: string): Promise<void> {
   if (isNode(root, instancePath)) return;
-  const { dir } = sourceDir(root, source);
+  const dir = sourceDir(root, source);
   if (!hasFile(dir, "page") && !hasFile(dir, "layout")) throw new Error(`fork source not found: ${source}`);
 
   const target = join(root, instancePath);
@@ -37,8 +35,4 @@ export async function ensureFork(root: string, instancePath: string, source: str
     if (name.startsWith(".") || name.startsWith("_") || CODE.test(name)) continue;
     if (existsSync(join(dir, name)) && statSync(join(dir, name)).isFile()) cpSync(join(dir, name), join(target, name));
   }
-}
-
-export function instanceKey(key: string): string {
-  return String(key).replace(/[^A-Za-z0-9_-]/g, "_") || "_";
 }

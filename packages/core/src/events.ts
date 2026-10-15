@@ -4,8 +4,13 @@ import { watch } from "node:fs";
 import { dirname, sep } from "node:path";
 import { CODE } from "./tree.ts";
 
+/**
+ * What the server tells the pages, on one stream. The shell receives the same (its host.ts HostEvent, with the agent
+ * events typed as the bridge's AgentEvent): each package is built on its own, so each end writes the protocol down.
+ */
 export type HostEvent =
   | { type: "code"; path: string }
+  | { type: "deps"; id: string } // the app's shared npm modules were rebuilt (deps.ts)
   | { type: "data"; path: string; file: string }
   | { type: "agent"; node: string; agent: string; event: Record<string, unknown> }
   | { type: "screen"; id: string; clientId: string; node: string; job: Record<string, unknown> }

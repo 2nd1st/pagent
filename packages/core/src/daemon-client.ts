@@ -80,6 +80,13 @@ const tryConnect = (path: string) =>
 let current: Promise<Connection> | null = null;
 let registration: Record<string, unknown> | null = null;
 
+/**
+ * Where this app's agents reach it, as the daemon says when the server registers: its HTTP proxy (for hooks), the
+ * socket for agents' `pagent` commands, and the secret their tokens are made from. A new daemon means new values.
+ */
+export type AgentAddress = { proxy: string | null; agents: string | null; secret: string };
+let onRegistered: (a: AgentAddress) => void = () => {};
+
 async function open(): Promise<Connection> {
   const paths = daemonPaths();
   let socket = await tryConnect(paths.socket);
@@ -101,7 +108,7 @@ async function open(): Promise<Connection> {
   if (hello.version !== DAEMON_VERSION) {
     console.warn(`the pagent daemon (pid ${hello.pid}) runs older code (${hello.version}, this is ${DAEMON_VERSION}); \`pagent daemon restart\` updates it and stops every agent it runs`);
   }
-  if (registration) await conn.request("register", registration);
+  if (registration) onRegistered(await conn.request<AgentAddress>("register", registration));
   return conn;
 }
 
@@ -115,12 +122,13 @@ export function daemon(): Promise<Connection> {
 }
 
 /**
- * Say which app this server is, now and on every reconnect. Returns the address agents should use for this app
- * (the daemon's proxy, stable across server restarts), or null if the daemon has no proxy.
+ * Say which app this server is, now and on every reconnect (a restarted daemon). `registered` gets where agents reach
+ * this app each time (the daemon's proxy and socket, stable across server restarts).
  */
-export async function registerApp(app: { root: string; port: number; pid: number }): Promise<string | null> {
+export async function registerApp(app: { root: string; port: number; pid: number }, registered: (a: AgentAddress) => void): Promise<void> {
   registration = app;
-  return (await (await daemon()).request<{ proxy: string | null }>("register", app)).proxy;
+  onRegistered = registered;
+  registered(await (await daemon()).request<AgentAddress>("register", app));
 }
 
 /** Start a process in the daemon. With `follow`, events arrive from the very first byte. */

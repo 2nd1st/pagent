@@ -1,4 +1,4 @@
-// Importing another MCP App as a component: `import Work from "mcp://127.0.0.1:4871/mcp?node=/.mounts/work"`.
+// Importing another server's MCP App as a component: `import Weather from "mcp://127.0.0.1:3001/mcp#show_forecast"`.
 // Connect to the server, call its UI tool, read the ui:// resource, and run it in a sandboxed iframe through
 // ext-apps' AppBridge, forwarding the app's tool calls and resource reads to that server.
 import { useEffect, useRef, useState } from "react";
@@ -57,6 +57,6 @@ export function McpAppFrame({ source, args = {} }: { source: string; args?: Reco
     };
   }, [source, JSON.stringify(args)]);
 
-  if (error) return <div className="ha-error">{source}: {error}</div>;
+  if (error) return <div className="pagent-error">{source}: {error}</div>;
   return <iframe ref={ref} title={source} sandbox="allow-scripts allow-forms" style={{ width: "100%", height, border: 0, display: "block" }} />;
 }

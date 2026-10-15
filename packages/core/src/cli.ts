@@ -1,23 +1,131 @@
 #!/usr/bin/env node
+// `pagent`, for two kinds of callers. An agent of an app (its harness gave it PAGENT_NODE / PAGENT_AGENT /
+// PAGENT_TOKEN): every command goes to its app, which answers, help included (commands.ts), so the command is never
+// out of date with the app. A person: serve an app, install a bridge, manage the daemon.
 import { existsSync, readFileSync } from "node:fs";
+import { request } from "node:http";
 import { join, resolve } from "node:path";
-import { existingDaemon } from "./daemon-client.ts";
-import { daemonPaths, type ProcInfo } from "./daemon-protocol.ts";
-import { startServer } from "./server.ts";
+import { flagValue, parse } from "./commands/args.ts";
 
 const [command, arg, ...rest] = process.argv.slice(2);
+const env = (k: string) => process.env[`PAGENT_${k}`] ?? "";
+
+/** An agent's command: to its app through the daemon's socket, as that agent. Prints what the app answers. */
+function agentCommand(argv: string[]) {
+  const sock = env("SOCK");
+  if (!sock || !env("APP")) {
+    console.error("pagent: this shell does not know where its app is (PAGENT_SOCK, PAGENT_APP). The app gives them to its agents.");
+    process.exit(3);
+  }
+  const req = request(
+    {
+      socketPath: sock,
+      path: `/a/${env("APP")}/_cli`,
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pagent-node": env("NODE"), "x-pagent-agent": env("AGENT"), "x-pagent-token": env("TOKEN") },
+    },
+    (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (d) => (body += d));
+      res.on("end", () => {
+        let r: { stdout?: string; stderr?: string; exit?: number };
+        try {
+          r = res.statusCode === 200 ? JSON.parse(body) : { stderr: `pagent: the app answered ${res.statusCode}: ${body.trim()}`, exit: 3 };
+        } catch {
+          r = { stderr: `pagent: unexpected answer from the app: ${body.slice(0, 300)}`, exit: 3 };
+        }
+        const line = (s?: string) => (s ? (s.endsWith("\n") ? s : `${s}\n`) : "");
+        process.stdout.write(line(r.stdout), () => process.stderr.write(line(r.stderr), () => process.exit(r.exit ?? 0)));
+      });
+    },
+  );
+  req.on("error", (e: NodeJS.ErrnoException) => {
+    console.error(`pagent: cannot reach the app at ${sock} (${e.code ?? e.message}). In a sandbox, that socket must be allowed.`);
+    process.exit(3);
+  });
+  req.end(JSON.stringify({ argv, cwd: process.cwd() }));
+}
 
 const usage = () => {
-  console.error("usage: pagent serve <app-root> [--port 4870]\n       pagent daemon status|stop|restart");
+  console.error(
+    "usage: pagent serve <app-root> [--port 4870] [--host 0.0.0.0]   --host: also for other devices (with a token)\n" +
+      "       pagent add <bridge> [--path /x] [--root <app-root>]     install a bridge into the app (default root: .)\n" +
+      '       pagent add --app "<Mac app>" [--path /x] [--root …]   a new bridge for an app that has none\n' +
+      "       pagent add                                            list the bridges\n" +
+      "       pagent daemon status|stop|restart\n" +
+      "       pagent stop <node>#<agent> [--root <app-root>]           stop that agent's turn in progress (as Esc in its TUI)\n" +
+      "An app's agents have more commands (`pagent --help` in an agent's shell).",
+  );
   process.exit(1);
 };
 
-if (command === "serve" && arg) {
-  const portIdx = rest.indexOf("--port");
-  const port = portIdx >= 0 ? Number(rest[portIdx + 1]) : 4870;
+
+// In an agent's shell, `pagent` is its app's commands (all of them go to the app, as that agent); the person's
+// commands (serve, daemon) are not those: `pagent` is pre-approved for agents, and stopping the daemon from in there
+// would stop every agent.
+if (env("TOKEN")) {
+  agentCommand(process.argv.slice(2));
+} else if (command === "add") {
+  // What agents do with `pagent bridges` / `pagent add` (through the app), for a person at a terminal: the same code.
+  // Its arguments are read as the agents' `pagent add` reads them (commands/args.ts), plus --root.
+  const { addNode, describeAdd, listBridges } = await import("./install.ts");
+  const a = parse(process.argv.slice(3));
+  const root = resolve(flagValue(a, "root") ?? ".");
+  const source = a.pos[0];
+  const app = flagValue(a, "app");
+  if (!source && !app) {
+    const { bridges } = await listBridges(root);
+    for (const b of bridges) {
+      console.log(`${b.name.padEnd(12)} ${b.app ?? ""}${b.appOnThisMac === false ? " (not on this Mac)" : ""}${b.installedAt ? `  [installed at ${b.installedAt}]` : ""}\n             ${b.summary}`);
+    }
+    console.log('\npagent add <name> to install one; pagent add --app "<Mac app>" for a new bridge to an app without one.');
+    process.exit(0);
+  }
+  try {
+    console.log(describeAdd(await addNode(root, { source, app, path: flagValue(a, "path") })));
+  } catch (e) {
+    console.error(`Nothing added: ${(e as Error).message}`);
+    process.exit(1);
+  }
+} else if (command === "serve" && arg) {
+  const flags = parse(rest);
+  const port = Number(flagValue(flags, "port") ?? 4870);
+  const host = flagValue(flags, "host") ?? undefined;
   // Agents run in the daemon: stopping this server leaves them running, and the next server picks them up.
-  startServer({ root: resolve(arg), port });
+  const { ensureShell } = await import("./engine.ts");
+  try {
+    ensureShell();
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(1);
+  }
+  const { startServer } = await import("./server.ts");
+  startServer({ root: resolve(arg), port, host });
+} else if (command === "stop" && arg?.includes("#")) {
+  // The app's own control plane (POST /_pagent/stop), on the server the daemon knows for that app.
+  const { existingDaemon } = await import("./daemon-client.ts");
+  const root = resolve(flagValue(parse(rest), "root") ?? ".");
+  const conn = await existingDaemon();
+  const apps = conn ? (await conn.request<{ apps: { root: string; port: number }[] }>("status")).apps : [];
+  conn?.end();
+  const app = apps.find((a) => a.root === root);
+  if (!app) {
+    console.error(`pagent: no server is running the app at ${root} (--root <app-root>)`);
+    process.exit(1);
+  }
+  const [node, agent] = arg.split("#");
+  const res = await fetch(`http://127.0.0.1:${app.port}/_pagent/stop`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node: node || "/", agent }) });
+  const r = (await res.json().catch(() => ({}))) as { said?: string | null; error?: string };
+  if (!res.ok) {
+    console.error(`pagent stop: ${r.error ?? res.statusText}`);
+    process.exit(1);
+  }
+  console.log(r.said ? `${arg}: ${r.said}` : `${arg} is in no turn; nothing to stop`);
 } else if (command === "daemon" && ["status", "stop", "restart"].includes(arg)) {
+  const { existingDaemon } = await import("./daemon-client.ts");
+  const { daemonPaths } = await import("./daemon-protocol.ts");
+  type ProcInfo = import("./daemon-protocol.ts").ProcInfo;
   const conn = await existingDaemon();
   if (!conn) {
     console.log(`no pagent daemon running (${daemonPaths().socket})`);
@@ -26,7 +134,7 @@ if (command === "serve" && arg) {
   type Status = { version: string; pid: number; apps: { root: string; port: number; pid: number }[]; procs: ProcInfo[] };
   const s = await Promise.race([conn.request<Status>("status"), new Promise<null>((r) => setTimeout(() => r(null), 3000))]);
   if (!s) {
-    // An older daemon that speaks another protocol: stop it by its pid.
+    // A daemon that does not answer (hung): stop it by its pid.
     const pidFile = join(daemonPaths().home, "daemon.pid");
     const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : 0;
     if (arg !== "status" && pid) {

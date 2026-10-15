@@ -1,49 +1,64 @@
-// Actions: what a node can do without an LLM. A shell command (export const actions), or an exported function
-// of a "use server" file in the node folder. The same run serves the page (useAction, or the imported function),
-// the node's MCP tools, triggers, and any harness that mounts the node.
-import { exec as execCb, spawn } from "node:child_process";
+// Actions: what a node can do without an LLM, the exported (async) functions of the "use server" files in its folder.
+// The same run serves the page (which imports the function: compile.ts makes it a call here), agents
+// (`pagent run <node> <name>`), triggers, routes and other nodes' server code (both import it by address).
+//
+// Across the engine a call is JSON both ways. Its input is the function's one argument; its result is what it returned
+// (undefined stays undefined; anything else as JSON.stringify makes it: a Date becomes a string, a Map an object), or
+// what it threw: the caller's promise rejects with an Error of the same message. Stacks, logs and server paths stay with
+// the server and the node's agents (`pagent run` prints them); a page or another app gets the message only.
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
-import { build } from "esbuild";
+import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { build, type Plugin } from "esbuild";
+import { via, type Caller } from "./caller.ts";
+import { withCall } from "./calls.ts";
+import { foreignServerFile, nodeOfFile, serverModule } from "./compile.ts";
+import { engine } from "./engine.ts";
+import { isServerFile } from "./extract.ts";
 import type { Nodes } from "./nodes.ts";
+import { noteLaunch, quitsAfter } from "./quit.ts";
 
-const exec = promisify(execCb);
+/**
+ * What an action did: its return value (none when it returned undefined), or the message it threw (error) with its
+ * stack, for the server's log and the node's agents. logs: what it printed.
+ */
+export type ActionResult = { ok: true; value?: unknown; logs: string } | { ok: false; error: string; stack?: string; logs: string };
 
-/** stdout: the command's output, or the function's return value as text. value: the function's return value. */
-export type ActionResult = { ok: boolean; stdout: string; stderr: string; value?: unknown };
+/** What a page (or server code calling another node) gets back: the value, or the error's message. */
+export type ClientResult = { ok: true; value?: unknown } | { ok: false; error: string };
+
+export const forClient = (r: ActionResult): ClientResult => (r.ok ? ("value" in r ? { ok: true, value: r.value } : { ok: true }) : { ok: false, error: r.error });
+
+/** A return value as text, for agents and `pagent tree`: a string as it is, other JSON indented, nothing as "". */
+export const valueText = (r: ActionResult & { ok: true }) => (r.value === undefined || r.value === null ? "" : typeof r.value === "string" ? r.value : JSON.stringify(r.value, null, 2));
 
 const TIMEOUT = 120_000;
 
 /**
- * What a page (or an MCP host) gets back: the result, or the error's first line. Logs, stacks and server paths
- * stay with the server and the node's agents.
+ * Whom an action runs for. caller: who called it (a page, an agent's `pagent run`, a trigger, a route; server code calling
+ * another node's function: its own call's caller, with its via chain), what its tell() says the message is from.
+ * turn: whose turn it is part of (quit.ts: an agent's, a trigger's run; none for a page), so an app a `quit: "after"`
+ * bridge launched in it is closed when that turn ends. Server code's calls to other nodes carry both on.
  */
-export function forClient(r: ActionResult): ActionResult {
-  if (!r.ok) return { ok: false, stdout: "", stderr: r.stderr.split("\n")[0] || "failed" };
-  return { ok: true, stdout: r.stdout, stderr: "", ...("value" in r ? { value: r.value } : {}) };
-}
+export type RunFor = { caller: Caller; turn?: string };
 
-export async function runAction(root: string, nodes: Nodes, path: string, name: string, input?: unknown): Promise<ActionResult> {
+/** Run a node's action. */
+export async function runAction(root: string, nodes: Nodes, path: string, name: string, input: unknown, how: RunFor): Promise<ActionResult> {
   const { dir, manifest } = await nodes.declarations(path);
   const action = manifest.actions.find((a) => a.name === name);
-  if (!action) return { ok: false, stdout: "", stderr: `node ${path} has no action "${name}"` };
-  if (action.file) return runServerFunction(root, dir, join(root, path), action.file, name, input);
-  try {
-    const { stdout, stderr } = await exec(action.run!, {
-      cwd: typeof action.cwd === "string" ? action.cwd : join(root, path),
-      env: { ...process.env, PAGENT_INPUT: JSON.stringify(input ?? null) },
-      timeout: TIMEOUT,
-      maxBuffer: 16 * 1024 * 1024,
-      shell: "/bin/sh",
-    });
-    return { ok: true, stdout, stderr };
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; message: string };
-    return { ok: false, stdout: err.stdout ?? "", stderr: err.stderr || err.message };
-  }
+  if (!action) return { ok: false, error: `node ${path} has no action "${name}"`, logs: "" };
+  const app = how.turn ? quitsAfter(manifest.config) : null;
+  const since = Date.now();
+  const source = join(dir, action.file);
+  const { r, logs } = await withCall(via(how.caller, `${path}:${name}`), nodes.self ?? nodes.url ?? "", (call) =>
+    runServerCode(root, source, ENTRY(source), nodeOfFile(root, source), join(root, path), { name, input: input ?? null }, { url: nodes.url, turn: how.turn, call: call.id }, name),
+  );
+  if (app) await noteLaunch(how.turn!, app, since).catch((e) => console.warn(`${path}: ${(e as Error).message}`));
+  if (!r.ok) return { ok: false, error: r.error ?? "failed", ...(r.stack ? { stack: r.stack } : {}), logs };
+  return "value" in r ? { ok: true, value: r.value, logs } : { ok: true, logs };
 }
 
 // ---------------------------------------------------------------- "use server"
@@ -61,58 +76,156 @@ let out;
 try {
   if (typeof mod[name] !== "function") throw new Error(name + " is not an exported function");
   const value = await mod[name](input);
-  out = { ok: true, value: value === undefined ? null : value };
+  try {
+    out = JSON.stringify(value === undefined ? { ok: true } : { ok: true, value });
+  } catch (e) {
+    throw new Error(name + " returned a value that is not JSON (" + e.message + ")");
+  }
 } catch (e) {
-  out = { ok: false, error: e instanceof Error ? (e.stack ?? e.message) : String(e) };
+  out = JSON.stringify(e instanceof Error ? { ok: false, error: e.message, stack: e.stack } : { ok: false, error: String(e) });
 }
-writeSync(3, JSON.stringify(out));
+writeSync(3, out);
 `;
 
-const bundles = new Map<string, Promise<string>>(); // source hash → compiled file
+// A build remembers the local files it was made from (the "use server" file and what it imports, e.g. a helper or
+// another node's server file), and is made again when one of them changes.
+type Bundle = { file: string; inputs: [string, number][] }; // [file, mtime]
+const bundles = new Map<string, Promise<Bundle>>(); // "use server" file → its latest build
 
-/** Bundle a "use server" file for Node (its npm imports resolve from the app root), cached by content. */
-function bundle(root: string, dir: string, file: string): Promise<string> {
-  const source = join(dir, file);
-  const key = createHash("sha1").update(source).update(readFileSync(source)).digest("hex").slice(0, 16);
-  if (!bundles.has(key)) {
-    bundles.set(key, (async () => {
-      const out = join(tmpdir(), "pagent-server", `${key}.mjs`);
-      if (existsSync(out)) return out;
-      const r = await build({
-        stdin: { contents: ENTRY(source), resolveDir: dir, loader: "js" },
-        bundle: true,
-        write: false,
-        platform: "node",
-        format: "esm",
-        target: "node22",
-        nodePaths: [join(root, "node_modules")],
-        logLevel: "silent",
-        // Bundled CommonJS packages may still call require().
-        banner: { js: `import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);` },
+const fresh = (b: Bundle) =>
+  b.inputs.every(([f, mtime]) => {
+    try {
+      return statSync(f).mtimeMs === mtime;
+    } catch {
+      return false;
+    }
+  });
+
+// What the engine offers server code: `import { ax } from "pagent/server"` (server-api.ts). It stays outside the bundle,
+// loaded from the engine itself, so it finds its own files (ax.swift) and an engine update needs no rebuild of the function.
+const serverApi: Plugin = {
+  name: "pagent-server",
+  setup(b) {
+    b.onResolve({ filter: /^pagent\/server$/ }, () => ({ path: pathToFileURL(engine.core("server-api")).href, external: true }));
+  },
+};
+
+// Another node's server functions, `import { send } from "~/wechat/actions"`, are calls to that node's actions
+// through the app server (PAGENT_URL, loopback): they run as /wechat, in its folder, and the caller gets the return
+// value, or the error as an exception. Its own process, like any action.
+const remoteStub = (node: string, names: string[]) => `
+const call = (name) => async (input) => {
+  const url = process.env.PAGENT_URL;
+  if (!url) throw new Error(${JSON.stringify(`${node}`)} + "#" + name + ": no pagent server to run it on");
+  const res = await fetch(url + "/_pagent/action", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ node: ${JSON.stringify(node)}, name, input: input ?? null, turn: process.env.PAGENT_TURN, call: process.env.PAGENT_CALL }),
+  });
+  const r = await res.json();
+  if (!r.ok) throw new Error(r.error ?? ${JSON.stringify(node)} + ":" + name + " failed");
+  return r.value;
+};
+${names.map((n) => `export const ${n} = call(${JSON.stringify(n)});`).join("\n")}
+`;
+
+/**
+ * Server code and other nodes: a "use server" file of another node is imported by its address ("~/wechat/actions")
+ * and becomes calls to that node's actions; reached by a relative path it would run here, in the wrong folder, so
+ * that is an error. `stubbed` collects the files the stubs were made from (their exports), to rebuild when they change.
+ */
+function otherNodes(root: string, own: string | null, stubbed: Set<string>): Plugin {
+  return {
+    name: "pagent-other-nodes",
+    setup(b) {
+      b.onResolve({ filter: /^~\// }, (a) => {
+        const m = serverModule(root, a.path);
+        if (!m) return { errors: [{ text: `"${a.path}": server code imports another node's server functions by the address of its "use server" file ("~/<node>/<file>"), and this is not one` }] };
+        stubbed.add(m.file);
+        return { path: a.path, namespace: "pagent-remote", pluginData: m };
       });
-      mkdirSync(join(tmpdir(), "pagent-server"), { recursive: true });
-      writeFileSync(out, r.outputFiles[0].text);
-      return out;
-    })().catch((e) => {
-      bundles.delete(key);
-      throw e;
-    }));
-  }
-  return bundles.get(key)!;
+      b.onLoad({ filter: /.*/, namespace: "pagent-remote" }, (a) => {
+        const m = a.pluginData as { node: string; names: string[] };
+        return { contents: remoteStub(m.node, m.names), loader: "js" };
+      });
+      b.onLoad({ filter: /\.(c|m)?(t|j)sx?$/, namespace: "file" }, (a) => {
+        if (/[\\/]node_modules[\\/]/.test(a.path) || !isServerFile(readFileSync(a.path, "utf8"))) return undefined;
+        const home = nodeOfFile(root, a.path);
+        return home && home === own ? undefined : { errors: [{ text: foreignServerFile(root, a.path, home) }] };
+      });
+    },
+  };
 }
 
-async function runServerFunction(root: string, dir: string, cwd: string, file: string, name: string, input: unknown): Promise<ActionResult> {
+/**
+ * Bundle server code for Node, behind an entry that calls it (its npm imports resolve from the app root). own: the node
+ * the code belongs to, whose "use server" files it may import by a relative path (a route belongs to none).
+ */
+export async function bundle(root: string, source: string, entry: string, own: string | null): Promise<string> {
+  const key = `${source}\n${entry}`;
+  const last = await bundles.get(key)?.catch(() => null);
+  if (last && fresh(last)) return last.file;
+  const next = (async (): Promise<Bundle> => {
+    const stubbed = new Set<string>();
+    const r = await build({
+      stdin: { contents: entry, resolveDir: dirname(source), loader: "js" },
+      bundle: true,
+      write: false,
+      metafile: true,
+      platform: "node",
+      format: "esm",
+      target: "node22",
+      nodePaths: [join(root, "node_modules")],
+      logLevel: "silent",
+      plugins: [serverApi, otherNodes(root, own, stubbed)],
+      // Bundled CommonJS packages may still call require().
+      banner: { js: `import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);` },
+    });
+    const inputs = [
+      ...Object.keys(r.metafile!.inputs).filter((f) => f !== "<stdin>" && !f.includes("node_modules/") && !/^[\w-]+:/.test(f)),
+      ...stubbed,
+    ].map((f): [string, number] => [resolve(f), statSync(resolve(f)).mtimeMs]);
+    const text = r.outputFiles[0].text;
+    const out = join(tmpdir(), "pagent-server", `${createHash("sha1").update(text).digest("hex").slice(0, 16)}.mjs`);
+    if (!existsSync(out)) {
+      mkdirSync(join(tmpdir(), "pagent-server"), { recursive: true });
+      writeFileSync(out, text);
+    }
+    return { file: out, inputs };
+  })();
+  bundles.set(key, next);
+  try {
+    return (await next).file;
+  } catch (e) {
+    if (bundles.get(key) === next) bundles.delete(key);
+    throw e;
+  }
+}
+
+/** A node's "use server" file, bundled as its actions run (to check that it compiles). */
+export const bundleServerFile = (root: string, source: string) => bundle(root, source, ENTRY(source), nodeOfFile(root, source));
+
+/** What server code's process reports on fd 3: its value (none: it returned undefined), or its error's message and stack. */
+export type ServerOutcome = { ok: boolean; value?: unknown; error?: string; stack?: string; response?: { status: number; headers: Record<string, string>; body: string } };
+
+/**
+ * Run server code in a process of its own: bundled behind `entry`, which reads `stdin` and writes its outcome on fd 3.
+ * In `cwd`, with the app's .env, the app server's address (PAGENT_URL), the turn and the call it runs in. logs: what it
+ * printed. name: what the timeout says.
+ */
+export async function runServerCode(root: string, source: string, entry: string, own: string | null, cwd: string, stdin: unknown, env: { url?: string; turn?: string; call?: string }, name: string): Promise<{ r: ServerOutcome; logs: string }> {
   let script: string;
   try {
-    script = await bundle(root, dir, file);
+    script = await bundle(root, source, entry, own);
   } catch (e) {
     const errors = (e as { errors?: { text: string }[] }).errors?.map((x) => x.text).join("\n");
-    return { ok: false, stdout: "", stderr: `${file} does not compile: ${errors ?? (e as Error).message}` };
+    return { r: { ok: false, error: `${relative(root, source)} does not compile: ${errors ?? (e as Error).message}` }, logs: "" };
   }
   return new Promise((resolve) => {
-    const env = join(root, ".env");
-    const child = spawn(process.execPath, [...(existsSync(env) ? [`--env-file=${env}`] : []), script], {
+    const dotenv = join(root, ".env");
+    const child = spawn(process.execPath, [...(existsSync(dotenv) ? [`--env-file=${dotenv}`] : []), script], {
       cwd,
+      env: { ...process.env, ...(env.url ? { PAGENT_URL: env.url } : {}), ...(env.turn ? { PAGENT_TURN: env.turn } : {}), ...(env.call ? { PAGENT_CALL: env.call } : {}) },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     });
     let stdout = "";
@@ -124,17 +237,14 @@ async function runServerFunction(root: string, dir: string, cwd: string, file: s
     const timer = setTimeout(() => child.kill("SIGKILL"), TIMEOUT);
     child.on("close", (code) => {
       clearTimeout(timer);
-      const logs = (stdout + stderr).trim();
-      let r: { ok: boolean; value?: unknown; error?: string };
+      let r: ServerOutcome;
       try {
         r = JSON.parse(result);
       } catch {
         r = { ok: false, error: code === null ? `${name} timed out after ${TIMEOUT / 1000}s` : `${name} exited with ${code}` };
       }
-      if (!r.ok) return resolve({ ok: false, stdout: logs, stderr: r.error ?? "failed" });
-      const text = r.value === null ? "" : typeof r.value === "string" ? r.value : JSON.stringify(r.value, null, 2);
-      resolve({ ok: true, stdout: text, stderr: logs, value: r.value });
+      resolve({ r, logs: (stdout + stderr).trim() });
     });
-    child.stdin!.end(JSON.stringify({ name, input: input ?? null }));
+    child.stdin!.end(JSON.stringify(stdin));
   });
 }

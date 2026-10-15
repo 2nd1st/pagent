@@ -1,23 +1,14 @@
-import * as React from "react";
-import * as ReactDOM from "react-dom";
 import * as ReactDOMClient from "react-dom/client";
-import * as jsxRuntime from "react/jsx-runtime";
-import * as bridge from "@pagent/bridge";
 import { App } from "./App.tsx";
+import { provideHostModules } from "./host-modules.ts";
 import { startScreenRelay } from "./screen.ts";
 import "./styles.css";
 
 // Node modules are compiled with these as host-provided singletons (one React, one bridge).
-(globalThis as any).__HA__ = {
-  modules: {
-    react: React,
-    "react-dom": ReactDOM,
-    "react-dom/client": ReactDOMClient,
-    "react/jsx-runtime": jsxRuntime,
-    "react/jsx-dev-runtime": jsxRuntime,
-    pagent: bridge,
-  },
-};
+provideHostModules();
+
+// The page's language is the reader's (fonts, line breaking, quotes): pages are written in the language people write in.
+document.documentElement.lang = navigator.language || "en";
 
 ReactDOMClient.createRoot(document.getElementById("root")!).render(<App />);
 startScreenRelay();

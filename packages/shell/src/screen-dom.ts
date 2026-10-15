@@ -1,6 +1,6 @@
 // The screen as an agent sees it (after open-mcp-apps' shell runtime): read a node's region of the page and
-// operate its controls. Pure DOM; the shell (SSE) and an MCP App iframe (polling) each relay jobs to it.
-import { callPageTool } from "@pagent/bridge";
+// operate its controls. Pure DOM; the shell relays jobs to it (screen.ts, over its event stream).
+import { callPageTool, mountedPageTools } from "@pagent/bridge";
 
 const ACTIONABLE =
   "button,a[href],input,select,textarea,summary,[role=button],[role=tab],[role=link],[role=checkbox],[role=switch],[role=option],[role=menuitem]";
@@ -10,8 +10,13 @@ const byRef = new Map<string, WeakRef<Element>>();
 let seq = 0;
 const squash = (t: unknown, n = 90) => String(t ?? "").replace(/\s+/g, " ").trim().slice(0, n);
 
-// The agent's own surfaces (its console, chat, questions) are not part of the screen.
-const isChrome = (el: Element) => !!el.closest("[data-ha-chrome],[aria-hidden=true]");
+// The agent's own surfaces (its console, chat, questions) are not part of the screen; a card in a reply (a node shown
+// in the chat, data-pagent-card) is, like the node on its own page.
+const isChrome = (el: Element) => {
+  if (el.closest("[aria-hidden=true]")) return true;
+  const c = el.closest("[data-pagent-chrome],[data-pagent-card]");
+  return !!c && c.hasAttribute("data-pagent-chrome");
+};
 
 function visible(el: Element): boolean {
   const cs = getComputedStyle(el);
@@ -27,11 +32,18 @@ function label(el: Element): string {
   return squash(el.getAttribute("aria-label") || (lab as HTMLElement | null)?.innerText || (el as HTMLElement).innerText || h.placeholder || h.title || h.value || h.name);
 }
 
-const region = (node: string) => document.querySelector(`.ha-node[data-path="${CSS.escape(node)}"]`);
+/**
+ * Where a node is on screen: its page, and each card of it in a conversation (a node can be shown more than once, with
+ * other props). A layout and the page of the same node nest; the outer one covers both.
+ */
+const regions = (node: string) => {
+  const all = [...document.querySelectorAll(`.pagent-node[data-path="${CSS.escape(node)}"]`)];
+  return all.filter((el) => !all.some((o) => o !== el && o.contains(el)));
+};
 
 export function read(node: string): string {
-  const root = region(node);
-  if (!root) return `Node ${node} is not on this screen.`;
+  const roots = regions(node);
+  if (!roots.length) return `Node ${node} is not on this screen.`;
   const out = [`${node} · ${location.pathname} · viewport ${innerWidth}x${innerHeight}`];
   let chars = 0;
   const push = (line: string) => {
@@ -48,7 +60,8 @@ export function read(node: string): string {
       const st: string[] = [];
       if (el.getAttribute("aria-selected") === "true" || el.getAttribute("aria-current") || el.getAttribute("aria-pressed") === "true") st.push("selected");
       if (h.checked) st.push("checked");
-      if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && h.type !== "checkbox") st.push(`value="${squash(h.value, 60)}"`);
+      // A password field's value is not read out (whoever reads the screen may be an agent: it is a page's secret).
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && h.type !== "checkbox") st.push(h.type === "password" ? (h.value ? "filled" : "empty") : `value="${squash(h.value, 60)}"`);
       const r = el.getBoundingClientRect();
       if (r.bottom < 0 || r.top > innerHeight) st.push("off-screen");
       push(`[${ref}] ${kind} "${label(el)}"${st.length ? ` (${st.join(", ")})` : ""}`);
@@ -62,17 +75,21 @@ export function read(node: string): string {
       } else if (c.nodeType === 1) walk(c as Element);
     }
   };
-  for (const c of root.children) walk(c);
+  for (const root of roots) {
+    const card = root.closest("[data-pagent-card]")?.getAttribute("data-pagent-card");
+    if (roots.length > 1) push(card ? `--- a card in the conversation: ${card}` : `--- ${location.pathname}${location.search}`);
+    for (const c of root.children) walk(c);
+  }
   return out.join("\n");
 }
 
 function find(node: string, ref?: string, want?: string): HTMLElement | null {
-  const root = region(node);
+  const roots = regions(node);
   const el = ref ? byRef.get(ref)?.deref() : undefined;
-  if (el && el.isConnected && root?.contains(el) && !isChrome(el)) return el as HTMLElement;
+  if (el && el.isConnected && roots.some((r) => r.contains(el)) && !isChrome(el)) return el as HTMLElement;
   const w = squash(want).toLowerCase();
-  if (!w || !root) return null;
-  const all = [...root.querySelectorAll(ACTIONABLE)].filter((e) => visible(e) && !isChrome(e)) as HTMLElement[];
+  if (!w) return null;
+  const all = roots.flatMap((r) => [...r.querySelectorAll(ACTIONABLE)]).filter((e) => visible(e) && !isChrome(e)) as HTMLElement[];
   return all.find((e) => label(e).toLowerCase() === w) ?? all.find((e) => label(e).toLowerCase().includes(w)) ?? null;
 }
 
@@ -107,7 +124,7 @@ async function act(node: string, job: { action: string; ref?: string; label?: st
 
 export type Job = { action: string; ref?: string; label?: string; value?: string; name?: string; input?: unknown };
 
-/** Run one job against this document. `navigate` moves the view to a route (pushState in the shell, state in an iframe). */
+/** Run one job against this document. `navigate` moves the view to a route (pushState). */
 export async function runJob(node: string, job: Job, navigate: (path: string) => void): Promise<string> {
   try {
     if (job.action === "tool") {
@@ -117,7 +134,7 @@ export async function runJob(node: string, job: Job, navigate: (path: string) =>
     if (job.action === "open") {
       navigate(job.value!);
       await new Promise((r) => setTimeout(r, 1200));
-      return `Opened ${job.value}. The screen now:\n\n${read("/")}`;
+      return `Opened ${job.value}. The screen now:\n\n${read(job.value!.split("?")[0] || "/")}`;
     }
     return job.action === "read" ? read(node) : await act(node, job);
   } catch (err) {
@@ -130,10 +147,14 @@ export async function runJob(node: string, job: Job, navigate: (path: string) =>
 const born = Date.now();
 let touched = 0;
 
-/** What a relay reports: which nodes are on screen, whether it is visible, when the user last touched it. */
+/**
+ * What a relay reports: which nodes are on screen, which page tools are mounted (node#name: a page tool goes to a screen
+ * that has it), whether it is visible, when the user last touched it.
+ */
 export function presence() {
-  const nodes = [...new Set([...document.querySelectorAll(".ha-node[data-path]")].map((e) => e.getAttribute("data-path")!))];
-  return { visible: document.visibilityState === "visible", touched, born, nodes };
+  const nodes = [...new Set([...document.querySelectorAll(".pagent-node[data-path]")].map((e) => e.getAttribute("data-path")!))];
+  const tools = mountedPageTools().map((t) => `${t.node}#${t.name}`);
+  return { visible: document.visibilityState === "visible", touched, born, nodes, tools };
 }
 
 /** Track the user's own pointer use (the most recently used screen answers). `onTouch` fires at most every 3s. */

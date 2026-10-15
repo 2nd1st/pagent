@@ -2,16 +2,27 @@
 import { DefaultChatTransport, type UIMessage } from "ai";
 import type { AgentEvent, AgentRef, AgentStatus, DataRead, DataWrite, HostApi } from "@pagent/bridge";
 
+/**
+ * What the server sends on its event stream (core events.ts HostEvent, the sending end of the same protocol), and
+ * "resync": the stream reconnected, anything may have changed while we were away.
+ */
 export type HostEvent =
-  | { type: "resync" } // the stream reconnected: anything may have changed while we were away
+  | { type: "resync" }
   | { type: "code"; path: string }
+  | { type: "deps"; id: string }
   | { type: "data"; path: string; file: string }
   | { type: "agent"; node: string; agent: string; event: AgentEvent }
-  | { type: "screen"; id: string; clientId: string; node: string; job: { action: string; ref?: string; label?: string; value?: string } };
+  | { type: "screen"; id: string; clientId: string; node: string; job: { action: string; ref?: string; label?: string; value?: string; name?: string; input?: unknown } }
+  | { type: "trigger"; node: string; name: string; why: string };
 
 const listeners = new Set<(e: HostEvent) => void>();
 let source: EventSource | null = null;
 let heard = 0;
+// Whether the stream has been open once, and a read went ahead without it (it took long): then it says resync on opening.
+let opened = false;
+let readWithout = false;
+let whenOpen: () => void = () => {};
+const open = new Promise<void>((r) => (whenOpen = r));
 
 /** This browser tab. The server sends its screen jobs to it by this id. */
 export const clientId = "c" + Math.random().toString(36).slice(2, 10);
@@ -20,20 +31,54 @@ const dispatch = (e: HostEvent) => {
   for (const l of listeners) l(e);
 };
 
+/**
+ * The app's npm packages were bundled again (a new package, an install). Modules of the old build may hold
+ * singletons the new one would duplicate (an editor's registry, custom elements), so if this page ran any, start
+ * over, like Vite after re-optimizing; otherwise nodes just reload (a page waiting for a package now compiles).
+ * Each shared entry module adds its build id to __PAGENT_DEPS__ when it runs.
+ */
+function depsRebuilt(id: string) {
+  const loaded = (globalThis as { __PAGENT_DEPS__?: Set<string> }).__PAGENT_DEPS__ ?? new Set<string>();
+  if ([...loaded].some((x) => x !== id)) return location.reload();
+  dispatch({ type: "resync" });
+}
+
 // EventSource gives up for good on a non-200 response, and a proxy may keep a dead stream open after the
 // server restarts. So reconnect ourselves (on close, or when the server's ping stops) and tell everyone to resync.
 function connect(isRetry = false) {
   source?.close();
   heard = Date.now();
-  source = new EventSource(`/api/events?client=${clientId}`);
-  source.onopen = () => isRetry && dispatch({ type: "resync" });
+  source = new EventSource(`/_pagent/events?client=${clientId}`);
+  source.onopen = () => {
+    const first = !opened;
+    opened = true;
+    whenOpen();
+    if (isRetry || (first && readWithout)) dispatch({ type: "resync" });
+  };
   source.addEventListener("ping", () => (heard = Date.now()));
-  source.onmessage = (m) => ((heard = Date.now()), dispatch(JSON.parse(m.data) as HostEvent));
+  source.onmessage = (m) => {
+    heard = Date.now();
+    const e = JSON.parse(m.data) as HostEvent;
+    if (e.type === "deps") return depsRebuilt(e.id);
+    dispatch(e);
+  };
   source.onerror = () => {
     if (source?.readyState === EventSource.CLOSED) setTimeout(() => connect(true), 1000);
   };
 }
 setInterval(() => source && Date.now() - heard > 40_000 && connect(true), 5_000);
+
+/**
+ * Subscribe, then read: a read of what the stream keeps current (an agent's status, its history, a data file) waits for
+ * the stream to be open. Read before, a change in between would reach neither: the read is older than it, and the
+ * server had nobody to send it to (a page opened just as an agent's turn began showed it idle until the turn ended).
+ * A stream slow to open (a proxy) does not hold reads up for long: they go ahead, and its opening says resync.
+ */
+function subscribed(): Promise<void> {
+  if (!source) connect();
+  if (opened) return Promise.resolve();
+  return Promise.race([open, new Promise<void>((r) => setTimeout(() => ((readWithout = true), r()), 2000))]);
+}
 
 export function onHostEvent(cb: (e: HostEvent) => void): () => void {
   if (!source) connect();
@@ -52,41 +97,60 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 
 const qs = (o: Record<string, string>) => new URLSearchParams(o).toString();
 
-export function createHost(NodeFrame: HostApi["NodeFrame"], McpApp?: HostApi["McpApp"], Terminal?: HostApi["Terminal"]): HostApi {
+/** The app's pages and their titles, loaded once; again after the code changed. */
+let titles: Promise<Map<string, string>> | null = null;
+let watchingTitles = false;
+function pageTitles(): Promise<Map<string, string>> {
+  if (!watchingTitles) {
+    watchingTitles = true;
+    onHostEvent((e) => void ((e.type === "code" || e.type === "resync") && (titles = null)));
+  }
+  if (!titles) {
+    titles =api<{ pages: { path: string; title: string }[] }>("/_pagent/pages").then((r) => new Map(r.pages.map((p) => [p.path, p.title])), () => new Map());
+  }
+  return titles;
+}
+
+export function createHost(NodeFrame: HostApi["NodeFrame"], McpApp: HostApi["McpApp"], Terminal: HostApi["Terminal"]): HostApi {
   return {
     NodeFrame,
     McpApp,
     Terminal,
-    ask: (target, message, { chain, origin }) =>
-      api<{ text: string }>("/api/ask", {
+    ask: (target, message, { origin }) =>
+      api<{ text: string }>("/_pagent/ask", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...target, message, chain, origin }),
+        body: JSON.stringify({ ...target, message, origin }),
       }).then((r) => r.text),
-    history: (t: AgentRef) => api<{ messages: UIMessage[] }>(`/api/history?${qs({ node: t.node, agent: t.agent })}`).then((r) => r.messages),
+    history: (t: AgentRef, opts?: { after?: string }) =>
+      subscribed().then(() => api<{ messages: UIMessage[] }>(`/_pagent/history?${qs({ node: t.node, agent: t.agent, ...(opts?.after ? { after: opts.after } : {}) })}`).then((r) => r.messages)),
     // AI SDK's own HTTP transport: POST starts a turn and streams it; GET re-attaches to a turn in progress.
-    chatTransport: (t, { chain, origin, clientId }) =>
+    chatTransport: (t, { origin, clientId }) =>
       new DefaultChatTransport<UIMessage>({
-        api: "/api/chat",
-        prepareSendMessagesRequest: ({ messages }) => ({
-          body: { node: t.node, agent: t.agent, message: messages[messages.length - 1], chain, origin, clientId },
+        api: "/_pagent/chat",
+        // interject (sendMessage's body): into the agent's turn in progress, not after it.
+        prepareSendMessagesRequest: ({ messages, body }) => ({
+          body: { node: t.node, agent: t.agent, message: messages[messages.length - 1], origin, clientId, ...(body?.interject ? { interject: true } : {}) },
         }),
-        prepareReconnectToStreamRequest: () => ({ api: `/api/chat/stream?${qs({ node: t.node, agent: t.agent })}` }),
+        prepareReconnectToStreamRequest: () => ({ api: `/_pagent/chat/stream?${qs({ node: t.node, agent: t.agent })}` }),
       }),
-    status: (t, opts) => api<AgentStatus>(`/api/agent-status?${qs({ node: t.node, agent: t.agent, ...(opts?.handle ? { handle: "1" } : {}) })}`),
-    action: (node, name, input) =>
-      api("/api/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node, name, input }) }),
-    answer: (id, answer) =>
-      api<void>("/api/answer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, answer }) }),
+    status: (t, opts) =>
+      subscribed().then(() => api<AgentStatus>(`/_pagent/agent-status?${qs({ node: t.node, agent: t.agent, ...(opts?.handle ? { handle: "1" } : {}), ...(opts?.said ? { said: "1" } : {}) })}`)),
+    action: (node, name, input, from) =>
+      api("/_pagent/action", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node, name, input, from }) }),
+    stop: (t) =>
+      api<{ said: string | null }>("/_pagent/stop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(t) }).then((r) => r.said),
+    answer: (id, answer, values) =>
+      api<void>("/_pagent/answer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, answer, ...(values ? { values } : {}) }) }),
     onAgent: (t, cb) =>
       onHostEvent((e) => {
         if (e.type === "resync") cb({ type: "resync" });
         else if (e.type === "agent" && e.node === t.node && e.agent === t.agent) cb(e.event);
       }),
-    readData: (node, file) => api<DataRead>(`/api/data?${qs({ path: node, file })}`),
+    readData: (node, file) => subscribed().then(() => api<DataRead>(`/_pagent/data?${qs({ path: node, file })}`)),
     // 409 is an answer here (the file changed; its current content comes back), not an error.
     writeData: async (node, file, content, base) => {
-      const res = await fetch(`/api/data?${qs({ path: node, file })}`, {
+      const res = await fetch(`/_pagent/data?${qs({ path: node, file })}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(base === undefined ? { content } : { content, base }),
@@ -99,6 +163,7 @@ export function createHost(NodeFrame: HostApi["NodeFrame"], McpApp?: HostApi["Mc
       onHostEvent((e) => {
         if (e.type === "resync" || (e.type === "data" && e.path === node && e.file === file)) cb();
       }),
+    pageTitle: (path) => pageTitles().then((t) => t.get(path) ?? null),
   };
 }
 
@@ -106,9 +171,9 @@ export { qs, api };
 
 /** Nodes over HTTP + SSE (the shell). */
 export const httpLoader = {
-  node: (path: string, from?: string) => api<any>(`/api/node?${qs({ path, ...(from ? { from } : {}) })}`),
+  node: (path: string, from?: string) => api<any>(`/_pagent/node?${qs({ path, ...(from ? { from } : {}) })}`),
   module: (path: string, file: string, version: string) =>
-    import(/* @vite-ignore */ `/api/module?${qs({ path, file, v: version })}`),
+    import(/* @vite-ignore */ `/_pagent/module?${qs({ path, file, v: version })}`),
   onChange: (path: string, cb: () => void) =>
     onHostEvent((e) => {
       if (e.type === "resync" || (e.type === "code" && e.path === path)) cb();

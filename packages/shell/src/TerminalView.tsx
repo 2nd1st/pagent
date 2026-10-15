@@ -6,7 +6,22 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { qs } from "./host.ts";
 
-type Conflict = { holder: { pid: number; name?: string; startedAt?: string }; choices: ("fork" | "open")[] };
+const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/** xterm's colors from the theme's tokens: the terminal's own background and text, the accent as cursor and selection. */
+function theme() {
+  const background = token("--pagent-terminal-bg") || "#161615";
+  const accent = token("--pagent-accent") || "#3e63dd";
+  return {
+    background,
+    foreground: token("--pagent-terminal-fg") || "#e6e4df",
+    cursor: accent,
+    cursorAccent: background,
+    selectionBackground: /^#[0-9a-f]{6}$/i.test(accent) ? `${accent}4d` : "rgba(99, 128, 234, 0.3)", // 30%
+  };
+}
+
+type Conflict ={ holder: { pid: number; name?: string; startedAt?: string }; choices: ("fork" | "open")[] };
 
 export function TerminalView({ target, style }: { target: { node: string; agent: string }; style?: CSSProperties }) {
   const box = useRef<HTMLDivElement>(null);
@@ -16,12 +31,19 @@ export function TerminalView({ target, style }: { target: { node: string; agent:
 
   useEffect(() => {
     const term = new XTerm({
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontFamily: token("--pagent-mono") || "ui-monospace, Menlo, monospace",
       fontSize: 13,
+      lineHeight: 1.25,
       cursorBlink: true,
       allowProposedApi: true,
-      theme: { background: "#14161a", foreground: "#e4e4e4" },
+      theme: theme(),
     });
+    // The theme's tokens change with the system's light / dark, or a data-theme on the page.
+    const dark = matchMedia("(prefers-color-scheme: dark)");
+    const retheme = () => void (term.options.theme = theme());
+    dark.addEventListener("change", retheme);
+    const themed = new MutationObserver(retheme);
+    themed.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "style", "class"] });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(box.current!);
@@ -33,7 +55,7 @@ export function TerminalView({ target, style }: { target: { node: string; agent:
     const connect = (choice?: "fork" | "open") => {
       const proto = location.protocol === "https:" ? "wss" : "ws";
       const params = { ...target, cols: String(term.cols), rows: String(term.rows), ...(choice ? { choice } : {}) };
-      ws = new WebSocket(`${proto}://${location.host}/api/terminal?${qs(params)}`);
+      ws = new WebSocket(`${proto}://${location.host}/_pagent/terminal?${qs(params)}`);
       ws.onmessage = (e) => {
         const data = String(e.data);
         if (!data.startsWith("\0")) return void term.write(data);
@@ -54,6 +76,8 @@ export function TerminalView({ target, style }: { target: { node: string; agent:
     term.focus();
     return () => {
       closed = true;
+      dark.removeEventListener("change", retheme);
+      themed.disconnect();
       ro.disconnect();
       input.dispose();
       resized.dispose();
@@ -64,18 +88,18 @@ export function TerminalView({ target, style }: { target: { node: string; agent:
 
   // The padding lives on the frame, so the fit addon measures exactly the space xterm may use.
   return (
-    <div className="ha-terminal" style={style}>
-      <div ref={box} className="ha-terminal-screen" />
+    <div className="pagent-terminal" style={style}>
+      <div ref={box} className="pagent-terminal-screen" />
       {conflict && (
-        <div className="ha-terminal-conflict">
+        <div className="pagent-terminal-conflict">
           <p>
             This session is already open in another process (PID {conflict.holder.pid}
             {conflict.holder.name ? `, "${conflict.holder.name}"` : ""}). Two processes on one session would mix up its history.
           </p>
-          <div className="ha-terminal-choices">
+          <div className="pagent-terminal-choices">
             {conflict.choices.includes("fork") && <button onClick={() => reopen.current("fork")}>Fork a copy</button>}
             <button onClick={() => reopen.current()}>I closed it, retry</button>
-            {conflict.choices.includes("open") && <button className="ha-quiet" onClick={() => reopen.current("open")}>Open anyway</button>}
+            {conflict.choices.includes("open") && <button className="pagent-quiet" onClick={() => reopen.current("open")}>Open anyway</button>}
           </div>
         </div>
       )}

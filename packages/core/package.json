@@ -1,6 +1,6 @@
 {
   "name": "@pagent/core",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -8,8 +8,6 @@
   },
   "dependencies": {
     "@babel/parser": "^8.0.7",
-    "@modelcontextprotocol/ext-apps": "^2.0.3",
-    "@modelcontextprotocol/sdk": "^1.32.1",
     "ai": "^7.0.136",
     "esbuild": "^0.28.2",
     "node-pty": "^1.1.0",
