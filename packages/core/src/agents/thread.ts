@@ -144,7 +144,7 @@ function sessionEvents(ctx: Ctx, live: Live, ok: () => void, fail: (e: Error) =>
 /** A message the app did not send (typed into the TUI), or one sent before this server started: a run of its own. */
 function adopt(ctx: Ctx, live: Live, e: any): Bound {
   const m = e.meta ?? {};
-  const { run, push } = newRun(live.ref, m.user ?? userMessage(e.text), m.caller ?? { kind: "user" });
+  const { run, push } = newRun(live.ref, m.user ?? userMessage(e.text), m.caller ?? { kind: "user" }, m.unattended);
   if (m.user && e.clientId) run.id = e.clientId;
   known.add(run.id);
   let resolve = (_: string) => {};
@@ -159,7 +159,7 @@ async function turn({ ctx, run, push, input, message }: Turn): Promise<string> {
     const live = await ensureSession(ctx, run.ref);
     return await new Promise<string>((resolve) => {
       live.waiting.set(run.id, { run, push, forward: chunkHandler(run, push, () => {}), resolve });
-      const meta = { caller: input.caller, user: run.user, chain: input.chain, replyTo: input.replyTo, replyPost: input.replyPost };
+      const meta = { caller: input.caller, unattended: run.unattended, user: run.user, chain: input.chain, replyTo: input.replyTo, replyPost: input.replyPost };
       procOp("write", live.id, { data: JSON.stringify({ op: "ask", run: run.id, message, meta }) + "\n" });
     });
   } catch (e) {

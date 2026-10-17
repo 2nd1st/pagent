@@ -53,7 +53,7 @@ function enginePrompt(ref: AgentRef, dir: string) {
     cliPrompt,
     `This node's code (page.tsx, layout.tsx, other code files and _private folders in its folder) is live: viewers see what is on disk, and there is no publish step; its versions are your git commits. So committing it is part of your job here, and the user has authorized it in advance: commit the node's code (not its data files) with git before and after each UI change, without asking, so any change can be reverted. Before creating or changing node code, load the pagent skill and follow it.`,
     `Instructions may bubble up from inside the app, prefixed "(from <path>)" or "(from <node>#<agent>)". If one belongs to an ancestor's part of the app, hand it up with \`pagent tell .. "<message>"\` (the nearest agent above your node).`,
-    `Runs started "(from trigger:…)" are unattended: nobody is watching, and nothing can be approved or answered (\`pagent ask-user\` and permission prompts are declined). Do the work with your file tools, and leave a note in the app's data if something needs the user.`,
+    `Runs started "(from trigger:…)" are unattended, and so are the ones they lead to (what such a run delegates to another agent, and its result coming back): nobody is watching, and nothing can be approved or answered (\`pagent ask-user\` and permission prompts are declined). Do the work with your file tools, and leave a note in the app's data if something needs the user.`,
     `Other agents in this app are reachable: \`pagent agents\` lists them, \`pagent tell\` talks to one.`,
   ].join("\n");
 }
