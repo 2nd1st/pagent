@@ -88,3 +88,34 @@ describe("the app's own plane, from pages", () => {
     }
   });
 });
+
+describe("names the user allows (PAGENT_ALLOWED_HOSTS), with a port or without", () => {
+  let app: TestApp;
+  const stop = (origin: string, host?: string) =>
+    send(app.url + "/_pagent/stop", { method: "POST", headers: { "content-type": "application/json", origin, ...(host ? { host } : {}) }, body: JSON.stringify({ node: "/", agent: "bot" }) });
+
+  before(async () => {
+    app = await testApp({ "page.tsx": fakePage() }, { env: { PAGENT_ALLOWED_HOSTS: "box.example:8443, Tls.Example:443, any.example" } });
+  });
+  after(() => app.close());
+
+  // A proxy in front (tailscale serve, a tunnel) calls the server at 127.0.0.1; the page's origin is the name it shows.
+  test("a name with a port: a page there, at that port only", async () => {
+    assert.equal(await stop("https://box.example:8443"), 200);
+    assert.equal(await stop("https://box.example:3000"), 403, "another server at that name");
+    assert.equal(await stop("https://box.example"), 403, "its default port is another");
+    assert.equal(await stop("https://tls.example"), 200, "443 is https's own");
+    assert.equal(await stop("http://tls.example"), 403, "http's is 80");
+  });
+
+  test("a name alone: at any port, as before", async () => {
+    assert.equal(await stop("http://any.example:1234"), 200);
+    assert.equal(await stop("https://any.example"), 200);
+  });
+
+  test("the Host: the name decides, whatever the port", async () => {
+    assert.equal(await stop("https://box.example:8443", "box.example:8443"), 200);
+    assert.equal(await stop("https://box.example:8443", "box.example"), 200, "a proxy that drops the port");
+    assert.equal(await stop("https://other.example", "other.example"), 403);
+  });
+});

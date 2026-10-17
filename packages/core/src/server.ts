@@ -88,15 +88,20 @@ function streamRun(req: IncomingMessage, res: ServerResponse, run: Run) {
 // Who may drive this server. It runs actions and agents, so a web page the user happens to open must not reach
 // it (CSRF), nor a page whose domain re-resolves to 127.0.0.1 (DNS rebinding). Local processes need no Origin;
 // browsers always send one with cross-origin writes and WebSockets, and Sec-Fetch-Site with everything else.
-// PAGENT_ALLOWED_HOSTS adds host names beyond loopback (e.g. a tailnet name); listening beyond loopback (--host) adds
-// this machine's own names and addresses, and asks for the access token any device that calls by them, this one too
-// (remote.ts).
+// PAGENT_ALLOWED_HOSTS adds host names beyond loopback (e.g. a tailnet name), each at any port, or at the one it names
+// (box.tailnet.ts.net:443); listening beyond loopback (--host) adds this machine's own names and addresses, and asks
+// for the access token any device that calls by them, this one too (remote.ts).
 const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
-const allowedHosts = (env("ALLOWED_HOSTS") ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+const allowedHosts = (env("ALLOWED_HOSTS") ?? "")
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean)
+  .map((h) => /^(?<name>\[[^\]]*\]|[^:]+):(?<port>\d+)$/.exec(h)?.groups ?? { name: h, port: undefined });
+const allowedName = (host: string) => allowedHosts.some((a) => a.name === host.toLowerCase().replace(/:\d+$/, ""));
 let remoteOpen = false;
 /** A Host this machine's own pages and processes use: loopback, or a name the user allowed. By it, this machine needs no
  *  token (remote.ts). */
-const localName = (host: string) => LOOPBACK.test(host) || allowedHosts.includes(host.toLowerCase().replace(/:\d+$/, ""));
+const localName = (host: string) => LOOPBACK.test(host) || allowedName(host);
 const hostOk = (host: string) => localName(host) || (remoteOpen && ownHost(host));
 
 // The app's public face: its routes and /mcp. Everything else is the user's own.
@@ -106,10 +111,12 @@ const PUBLIC = /^\/(api|mcp)(\/|$)/;
 // this server at (the Host), whichever name that was: this server's own, the shell's dev server in front of it (vite
 // keeps the Host), this machine's name as another device opened it. Another port of localhost is another server (a
 // dev server, another pagent app), so the host name alone does not do. A name in PAGENT_ALLOWED_HOSTS is the user's
-// word (a proxy in front may rewrite the Host). The public face takes pages from any of this machine's names.
+// word (a proxy in front may rewrite the Host): at the port it names, if it names one (another server may be at another
+// port of that name). The public face takes pages from any of this machine's names.
 function originOk(req: IncomingMessage, url: URL, origin: URL): boolean {
   if (PUBLIC.test(url.pathname)) return hostOk(origin.host);
-  return origin.host === new URL(`${origin.protocol}//${req.headers.host}`).host || allowedHosts.includes(origin.hostname);
+  const port = origin.port || (origin.protocol === "https:" ? "443" : "80");
+  return origin.host === new URL(`${origin.protocol}//${req.headers.host}`).host || allowedHosts.some((a) => a.name === origin.hostname && (!a.port || a.port === port));
 }
 
 /** Why this request is refused, or null. */
