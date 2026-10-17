@@ -123,6 +123,16 @@ const hidden = () => 1;
   });
 });
 
+test('"use server": export * is an error that says to name the functions; re-exports by name are actions', () => {
+  const all = serverExports(`"use server";\nexport * from "./impl";\nexport * as more from "./more";\nexport type * from "./types";\n`, "actions.ts");
+  assert.deepEqual(all.names, []);
+  assert.equal(all.errors.length, 2);
+  assert.match(all.errors[0], /^actions\.ts:2: export \* .*name the functions, export \{ add, list \} from "\.\/impl", and re-export types as types, export type \* from "\.\/types"$/);
+  assert.match(all.errors[1], /^actions\.ts:3: /);
+  const named = serverExports(`"use server";\nexport { add, list as all } from "./impl";\n`, "actions.ts");
+  assert.deepEqual([named.names, named.errors], [["add", "all"], []]);
+});
+
 test('"use server": an argument with a default value keeps its type', () => {
   const r = serverExports(
     `"use server";\nexport async function list({ q }: { q?: string } = {}) { return q; }\nexport const top = async (x: { n: number } = { n: 3 }) => x.n;\n`,

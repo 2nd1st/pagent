@@ -35,8 +35,11 @@ export function serverExports(code: string, file: string): { names: string[]; er
     };
   };
   const types = localTypes(ast.program.body as Node[]);
+  // export * (or * as x) names nothing here: its functions would be no actions, and the page's import of one undefined.
+  const all = (stmt: Node) => errors.push(`${file}:${lineOf(code, stmt.start)}: export * makes no actions in a "use server" file (imported, they would be undefined); name the functions, export { add, list } from "./impl", and re-export types as types, export type * from "./types"`);
   for (const stmt of ast.program.body as Node[]) {
     if (stmt.type === "ExportDefaultDeclaration") errors.push(`${file}: a "use server" file exports named functions only (no default export)`);
+    if (stmt.type === "ExportAllDeclaration" && stmt.exportKind !== "type") all(stmt);
     if (stmt.type !== "ExportNamedDeclaration") continue;
     if (stmt.exportKind === "type") continue;
     const d = stmt.declaration as Node | null;
@@ -51,7 +54,7 @@ export function serverExports(code: string, file: string): { names: string[]; er
     } else if (d && !/^TS(TypeAlias|Interface)Declaration$/.test(d.type)) {
       errors.push(`${file}:${lineOf(code, stmt.start)}: a "use server" file exports functions only`);
     } else if (!d) {
-      for (const s of stmt.specifiers as Node[]) names.push(s.exported.name);
+      for (const s of stmt.specifiers as Node[]) s.type === "ExportNamespaceSpecifier" ? all(stmt) : names.push(s.exported.name);
     }
   }
   return { names, errors, about };
