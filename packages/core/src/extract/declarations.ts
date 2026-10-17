@@ -31,12 +31,13 @@ export type AgentDecl = { name: string; runner: string; [option: string]: unknow
  */
 export type ActionDecl = { name: string; file: string; input?: string; doc?: string; schema?: Record<string, unknown>; optional?: boolean };
 /**
- * When something happens (cron / every / watch / app), run an action of the node: the action does the rest, waking an
- * agent with tell() when it wants one. watch: a data file of the node ("tasks.json", "*.json"), or of another node by
- * its path from the app's root ("~/worker/tasks.json"). app: the bridge's app changed (its window, or one element of it:
- * { id } / { label, role }).
+ * When something happens (cron / every / watch / app / turn), run an action of the node: the action does the rest,
+ * waking an agent with tell() when it wants one. watch: a data file of the node ("tasks.json", "*.json"), or of another
+ * node by its path from the app's root ("~/worker/tasks.json"). app: the bridge's app changed (its window, or one
+ * element of it: { id } / { label, role }). turn: a turn of one of the node's agents starts, and ends (its name; true:
+ * any of them); the action gets the turn (triggers.ts, TurnEvent).
  */
-export type TriggerDecl = { name: string; cron?: string; every?: string; watch?: string; app?: AppWatchDecl; run: string };
+export type TriggerDecl = { name: string; cron?: string; every?: string; watch?: string; app?: AppWatchDecl; turn?: string | true; run: string };
 export type AppWatchDecl = true | { id: string; label?: string; role?: string } | { label: string; role?: string };
 /** A tool the page itself implements (useTool); input is a JSON Schema object. */
 export type ToolDecl = { name: string; description: string; input: Record<string, unknown> };
@@ -64,6 +65,18 @@ export type Extracted = {
   order?: number;
   /** The language it is written in (`metadata.lang`, "zh-CN"): the home page's is the app's, and the engine's words follow it. */
   lang?: string;
+  /**
+   * `metadata.fill`: the page takes the whole window below the shell's top bar, edge to edge (no padding around it, its
+   * height the window's): an app with its own frame (a sidebar, a chat that scrolls inside). On a layout, for the pages
+   * under it; the nearest one that says wins.
+   */
+  fill?: boolean;
+  /**
+   * `agents` is a function of the node's params (`export function agents({ params })`, as Next.js has
+   * generateMetadata): its agents are known only once it runs on the server, for one instance (agents-fn.ts). The
+   * module that runs it: the function and only what it uses of its file (agentsModule).
+   */
+  agentsFn?: string;
   errors: string[];
 };
 export type Manifest = Omit<Extracted, "errors">;
@@ -195,6 +208,97 @@ function walk(n: unknown, visit: (node: Node, parent: Node | null) => void, pare
   }
 }
 
+/** Agents as `export const agents` (or its function, agents-fn.ts) gives them: each normalized, or why not. */
+export function agentsFrom(value: unknown): { agents: AgentDecl[]; errors: string[] } {
+  const out: { agents: AgentDecl[]; errors: string[] } = { agents: [], errors: [] };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...out, errors: ["agents are an object: { <name>: { cli: … } }"] };
+  for (const [name, decl] of Object.entries(value)) {
+    const agent = normalizeAgent((decl ?? {}) as Record<string, unknown>, name);
+    if (typeof agent === "string") out.errors.push(agent);
+    else out.agents.push(agent);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- agents as a function of the params
+
+/** Through what TypeScript wraps an expression in (`(…) satisfies X`, `as`): the expression. */
+const unwrap = (n: Node): Node => (n && ["TSAsExpression", "TSSatisfiesExpression", "ParenthesizedExpression", "TSNonNullExpression"].includes(n.type) ? unwrap(n.expression) : n);
+
+/** `export function agents(…)` or `export const agents = (…) => …`: the statement, its declaration and the function. */
+function agentsFunction(body: Node[]): { stmt: Node; decl: Node; fn: Node } | null {
+  for (const stmt of body) {
+    if (stmt.type !== "ExportNamedDeclaration" || !stmt.declaration) continue;
+    const d = stmt.declaration;
+    if (d.type === "FunctionDeclaration" && d.id?.name === "agents") return { stmt, decl: d, fn: d };
+    if (d.type !== "VariableDeclaration") continue;
+    for (const v of d.declarations as Node[]) {
+      const init = v.init && unwrap(v.init);
+      if (v.id.name === "agents" && init && /^(ArrowFunctionExpression|FunctionExpression)$/.test(init.type)) return { stmt, decl: v, fn: init };
+    }
+  }
+  return null;
+}
+
+/** The names a piece of code refers to (or declares): every identifier in it, outside `skip`. By name, not by scope: more, never fewer. */
+function namesIn(n: Node, skip?: Node): Set<string> {
+  const out = new Set<string>();
+  walk(n, (x) => {
+    if (skip && x.start >= skip.start && x.end <= skip.end) return;
+    if (x.type === "Identifier" || x.type === "JSXIdentifier") out.add(x.name);
+  });
+  return out;
+}
+
+/** What a top-level statement declares. */
+function declared(stmt: Node): string[] {
+  const d = stmt.type === "ExportNamedDeclaration" && stmt.declaration ? stmt.declaration : stmt;
+  if (d.type === "VariableDeclaration") return (d.declarations as Node[]).flatMap((v) => [...namesIn(v.id)]);
+  return d.id?.name ? [d.id.name] : [];
+}
+
+/**
+ * The agents function as server code: the module that runs it on the server (the function and what it uses of its
+ * file: the imports and top-level declarations it refers to, and theirs; TypeScript, as written), and what the page's
+ * bundle leaves out with it (those declarations and imports when nothing else of the page uses them: a helper that
+ * reads this machine's folders would not even build for the browser). By name, not by scope: never too little.
+ */
+function serverOnly(code: string, body: Node[], fn: { stmt: Node }): { module: string; leave: Node[] } {
+  const text = (n: Node) => code.slice(n.start, n.end);
+  const needed = namesIn(fn.stmt);
+  const kept = new Set<Node>([fn.stmt]);
+  for (let more = true; more; ) {
+    more = false;
+    for (const stmt of body) {
+      if (kept.has(stmt) || stmt.type === "ImportDeclaration" || stmt.type === "ExportDefaultDeclaration" || !declared(stmt).some((n) => needed.has(n))) continue;
+      kept.add(stmt);
+      for (const n of namesIn(stmt)) needed.add(n);
+      more = true;
+    }
+  }
+  const imports = (s: Node) => (s.specifiers as Node[]).map((x) => x.local.name as string);
+  const module = body
+    .filter((s) => kept.has(s) || (s.type === "ImportDeclaration" && imports(s).some((n) => needed.has(n))))
+    .map((s) => (s === fn.stmt || s.type !== "ExportNamedDeclaration" ? text(s) : text(s.declaration)))
+    .join("\n");
+  // What the page leaves out: the declarations only the function needs (an exported one stays: something may import
+  // it), and then the imports only those use.
+  const leave = new Set([...kept].filter((s) => s === fn.stmt || s.type !== "ExportNamedDeclaration"));
+  const outside = new Set<string>();
+  for (let more = true; more; ) {
+    more = false;
+    outside.clear();
+    for (const s of body) if (s.type !== "ImportDeclaration" && !leave.has(s)) for (const n of namesIn(s)) outside.add(n);
+    for (const s of leave) {
+      if (s !== fn.stmt && declared(s).some((n) => outside.has(n))) (leave.delete(s), (more = true));
+    }
+  }
+  const used = new Set<string>();
+  for (const s of leave) for (const n of namesIn(s)) used.add(n);
+  const unused = body.filter((s) => s.type === "ImportDeclaration" && s.importKind !== "type" && s.specifiers.length && imports(s).some((n) => used.has(n)) && !imports(s).some((n) => outside.has(n)));
+  return { module, leave: [...[...leave].filter((s) => s !== fn.stmt), ...unused] };
+}
+
 /**
  * What a trigger's watch names: the node whose data files it watches (null: the trigger's own) and the file pattern.
  * "tasks.json" / "*.json": the node's own; "~/worker/tasks.json": /worker's (as useData names another node's file).
@@ -214,15 +318,20 @@ function normalizeTrigger(name: string, t: unknown): TriggerDecl | string {
   const spec = (t ?? {}) as Partial<TriggerDecl> & { webhook?: unknown; ask?: unknown; agent?: unknown };
   if (spec.webhook !== undefined) return `trigger "${name}": webhook triggers are gone; an HTTP entry is a route (api/<path>/route.ts, its POST runs an action or tell()s the agent)`;
   if (spec.ask !== undefined || spec.agent !== undefined)
-    return `trigger "${name}": ask and agent are gone. A trigger is when + an action ({ cron | every | watch | app, run: "<action>" }), and the action wakes an agent itself when one should: tell("/node#agent", "…") from "pagent/server"`;
-  const sources = [spec.cron, spec.every, spec.watch, spec.app].filter((x) => x !== undefined && (x as unknown) !== false).length;
-  if (!sources) return `trigger "${name}" needs cron, every, watch or app`;
+    return `trigger "${name}": ask and agent are gone. A trigger is when + an action ({ cron | every | watch | app | turn, run: "<action>" }), and the action wakes an agent itself when one should: tell("/node#agent", "…") from "pagent/server"`;
+  const sources = [spec.cron, spec.every, spec.watch, spec.app, spec.turn].filter((x) => x !== undefined && (x as unknown) !== false).length;
+  if (!sources) return `trigger "${name}" needs cron, every, watch, app or turn`;
+  // A turn is a when of its own: its action gets the turn, which a tick or a change has none of.
+  if (spec.turn !== undefined && sources > 1) return `trigger "${name}": turn is a when of its own; declare cron, every, watch or app in another trigger`;
+  if (spec.turn !== undefined && spec.turn !== true && !(typeof spec.turn === "string" && /^[\w-]+$/.test(spec.turn)))
+    return `trigger "${name}": turn is the name of one of this node's agents ("main"), or true for any of them`;
   if (typeof spec.run !== "string" || !spec.run) return `trigger "${name}" needs run: the action it runs (which tell()s an agent when one should wake)`;
   if (spec.cron !== undefined && !cronFields(String(spec.cron))) return `trigger "${name}": "${spec.cron}" is not a five-field cron expression`;
   if (spec.every !== undefined && !everyMs(String(spec.every))) return `trigger "${name}": every "${spec.every}" should be like "10s", "5m" or "1h" (at least 1s)`;
   if (spec.watch !== undefined && !watchOf(String(spec.watch))) return `trigger "${name}": watch "${spec.watch}" is a data file of the node ("tasks.json", "*.json") or of another node ("~/worker/tasks.json")`;
   const out: TriggerDecl = { name, run: spec.run };
   for (const k of ["cron", "every", "watch"] as const) if (typeof spec[k] === "string") out[k] = spec[k] as string;
+  if (spec.turn !== undefined) out.turn = spec.turn;
   const a = spec.app as unknown;
   if (a !== undefined && a !== false) {
     const target = a && typeof a === "object" && !Array.isArray(a) ? (a as Record<string, unknown>) : null;
@@ -293,6 +402,15 @@ export function analyze(
 
   const imports = new Map<string, string>(); // local component name → node source
   const fail = (n: Node, msg: string) => result.errors.push(`${file}:${lineOf(code, n.start)}: ${msg}`);
+  const fn = agentsFunction(ast.program.body as Node[]);
+  // Server code: the page gets none of it, nor what only it uses (serverOnly). The other edits inside it go (below).
+  const gone: Edit[] = [];
+  if (fn) {
+    const { module, leave } = serverOnly(code, ast.program.body as Node[], fn);
+    result.agentsFn = module;
+    if (fn.decl.type === "FunctionDeclaration") gone.push({ pos: fn.decl.start, end: fn.decl.end, text: "const agents = undefined;" });
+    for (const s of leave) gone.push({ pos: s.start, end: s.end, text: "" });
+  }
 
   // Declarations are module exports (like Next.js metadata): plain literals the server reads without running code.
   //   export const agents  = { ops: { cli: "claude", cwd: "…", sessionId: "…" } }
@@ -341,6 +459,9 @@ export function analyze(
         const lang = (meta as { lang?: unknown } | null)?.lang;
         if (typeof lang === "string" && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/.test(lang)) result.lang = lang;
         else if (lang !== undefined) fail(d, `metadata.lang must be a language tag ("en", "zh-CN"): the language the page is written in`);
+        const fill = (meta as { fill?: unknown } | null)?.fill;
+        if (typeof fill === "boolean") result.fill = fill;
+        else if (fill !== undefined) fail(d, `metadata.fill is true (the page fills the window below the top bar, edge to edge) or false`);
         continue;
       }
       if (which === "actions") {
@@ -350,6 +471,7 @@ export function analyze(
       if (!DECLARATIONS.has(which)) continue;
       // The client bundle keeps the export (so local references still resolve) but not its contents.
       if (d.init) result.edits.push({ pos: d.init.start, end: d.init.end, text: "undefined" });
+      if (which === "agents" && fn) continue; // a function of the params (above)
       let value: Record<string, unknown>;
       try {
         value = literal(d.init) as Record<string, unknown>;
@@ -359,11 +481,9 @@ export function analyze(
       }
       if (which === "config") result.config = value;
       if (which === "agents") {
-        for (const [name, decl] of Object.entries(value)) {
-          const agent = normalizeAgent((decl ?? {}) as Record<string, unknown>, name);
-          if (typeof agent === "string") fail(d, agent);
-          else result.agents.push(agent);
-        }
+        const r = agentsFrom(value);
+        result.agents.push(...r.agents);
+        for (const e of r.errors) fail(d, e);
       }
       if (which === "triggers") {
         for (const [name, t] of Object.entries(value)) {
@@ -457,6 +577,7 @@ export function analyze(
     else if (folders.length === 1) result.errors.push(`${file}: ${named.join(" and ")} would be one instance (one folder, ${folders[0]}); give each a distinct key`);
     else result.errors.push(`${file}: ${named.join(" and ")} would be one instance on a disk that ignores case, as macOS's does (${folders.join(", ")}); give each a key that differs in more than case`);
   }
+  if (gone.length) result.edits = [...result.edits.filter((e) => !gone.some((g) => e.pos >= g.pos && (e.end ?? e.pos) <= g.end!)), ...gone];
   return result;
 }
 
@@ -494,6 +615,7 @@ export function mergeManifest(parts: Extracted[]): Extracted {
     m.title = p.title ?? m.title; // parts come layout first, so the page's own title wins
     m.order = p.order ?? m.order;
     m.lang = p.lang ?? m.lang;
+    m.fill = p.fill ?? m.fill;
     m.errors.push(...p.errors);
   }
   // A remote agent's door here is its node's message route, so it is the node's one agent.
@@ -502,6 +624,8 @@ export function mergeManifest(parts: Extracted[]): Extracted {
   for (const t of m.triggers) {
     if (!m.actions.some((a) => a.name === t.run)) m.errors.push(`trigger "${t.name}" runs "${t.run}", which is not an action of this node (an exported function of one of its "use server" files)`);
     if (t.app && typeof m.config?.app !== "string") m.errors.push(`trigger "${t.name}" watches the app, but this node is not a bridge (its config names no app)`);
+    if (typeof t.turn === "string" && m.agents.length && !m.agents.some((a) => a.name === t.turn))
+      m.errors.push(`trigger "${t.name}" follows the turns of "${t.turn}", which is not an agent of this node (${m.agents.map((a) => a.name).join(", ")})`);
   }
   const quit = m.config?.quit;
   if (quit !== undefined && quit !== "after") m.errors.push(`config.quit is "after" (close the app pagent launched when the turn that launched it ends) or left out (never close it)`);

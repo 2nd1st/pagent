@@ -63,6 +63,15 @@ function save(root: string, keys: Stored[]) {
   read.delete(root);
 }
 
+/** A node moved (`pagent mv`): the keys for it, or for what is under it, reach it at its new place. How many changed. */
+export function moveScopes(root: string, rename: (path: string) => string): number {
+  const keys = stored(root);
+  const next = keys.map((k) => ({ ...k, scope: rename(k.scope) }));
+  const changed = next.filter((k, i) => k.scope !== keys[i].scope).length;
+  if (changed) save(root, next);
+  return changed;
+}
+
 /** A node path as a scope: "/dev", "/" (a leading / is optional, a trailing one dropped). */
 export function scopeOf(scope: string): string {
   const s = "/" + String(scope ?? "").trim().split("/").filter(Boolean).join("/");

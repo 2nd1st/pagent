@@ -21,6 +21,7 @@ import { engine } from "./engine.ts";
 import { isServerFile } from "./extract.ts";
 import type { Nodes } from "./nodes.ts";
 import { noteLaunch, quitsAfter } from "./quit.ts";
+import { notMade } from "./tree.ts";
 
 /**
  * What an action did: its return value (none when it returned undefined), or the message it threw (error) with its
@@ -48,14 +49,15 @@ export type RunFor = { caller: Caller; turn?: string };
 
 /** Run a node's action. */
 export async function runAction(root: string, nodes: Nodes, path: string, name: string, input: unknown, how: RunFor): Promise<ActionResult> {
-  const { dir, manifest } = await nodes.declarations(path);
+  const { dir, manifest, params } = await nodes.declarations(path);
   const action = manifest.actions.find((a) => a.name === name);
   if (!action) return { ok: false, error: `node ${path} has no action "${name}"`, logs: "" };
+  if (notMade(root, path)) return { ok: false, error: `${path} is not made yet (an instance of a dynamic page: open its page first)`, logs: "" };
   const app = how.turn ? quitsAfter(manifest.config) : null;
   const since = Date.now();
   const source = join(dir, action.file);
   const { r, logs } = await withCall(via(how.caller, `${path}:${name}`), nodes.self ?? nodes.url ?? "", (call) =>
-    runServerCode(root, source, ENTRY(source), nodeOfFile(root, source), join(root, path), { name, input }, { url: nodes.url, turn: how.turn, call: call.id }, name),
+    runServerCode(root, source, ENTRY(source), nodeOfFile(root, source), join(root, path), { name, input }, { url: nodes.url, turn: how.turn, call: call.id, here: { path, params: params ?? {} } }, name),
   );
   if (app) await noteLaunch(how.turn!, app, since).catch((e) => console.warn(`${path}: ${(e as Error).message}`));
   if (!r.ok) return { ok: false, error: r.error ?? "failed", ...(r.stack ? { stack: r.stack } : {}), logs };
@@ -162,7 +164,7 @@ function otherNodes(root: string, own: string | null, stubbed: Set<string>): Plu
  * Bundle server code for Node, behind an entry that calls it (its npm imports resolve from the app root). own: the node
  * the code belongs to, whose "use server" files it may import by a relative path (a route belongs to none).
  */
-export async function bundle(root: string, source: string, entry: string, own: string | null): Promise<string> {
+export async function bundle(root: string, source: string, entry: string, own: string | null, extra: Plugin[] = []): Promise<string> {
   const key = `${source}\n${entry}`;
   const last = await bundles.get(key)?.catch(() => null);
   if (last && fresh(last)) return last.file;
@@ -178,7 +180,7 @@ export async function bundle(root: string, source: string, entry: string, own: s
       target: "node22",
       nodePaths: [join(root, "node_modules")],
       logLevel: "silent",
-      plugins: [serverApi, otherNodes(root, own, stubbed)],
+      plugins: [...extra, serverApi, otherNodes(root, own, stubbed)],
       // Bundled CommonJS packages may still call require().
       banner: { js: `import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);` },
     });
@@ -206,6 +208,9 @@ export async function bundle(root: string, source: string, entry: string, own: s
 /** A node's "use server" file, bundled as its actions run (to check that it compiles). */
 export const bundleServerFile = (root: string, source: string) => bundle(root, source, ENTRY(source), nodeOfFile(root, source));
 
+/** The node server code runs as: its address (as its folder has it) and an instance's params. */
+export type Here = { path: string; params: Record<string, string | string[]> };
+
 /** What server code's process reports on fd 3: its value (none: it returned undefined), or its error's message and stack. */
 export type ServerOutcome = { ok: boolean; value?: unknown; error?: string; stack?: string; response?: { status: number; headers: Record<string, string>; body: string } };
 
@@ -214,10 +219,10 @@ export type ServerOutcome = { ok: boolean; value?: unknown; error?: string; stac
  * In `cwd`, with the app's .env, the app server's address (PAGENT_URL), the turn and the call it runs in. logs: what it
  * printed. name: what the timeout says.
  */
-export async function runServerCode(root: string, source: string, entry: string, own: string | null, cwd: string, stdin: unknown, env: { url?: string; turn?: string; call?: string }, name: string): Promise<{ r: ServerOutcome; logs: string }> {
+export async function runServerCode(root: string, source: string, entry: string, own: string | null, cwd: string, stdin: unknown, env: { url?: string; turn?: string; call?: string; here?: Here }, name: string, extra: Plugin[] = []): Promise<{ r: ServerOutcome; logs: string }> {
   let script: string;
   try {
-    script = await bundle(root, source, entry, own);
+    script = await bundle(root, source, entry, own, extra);
   } catch (e) {
     const errors = (e as { errors?: { text: string }[] }).errors?.map((x) => x.text).join("\n");
     return { r: { ok: false, error: `${relative(root, source)} does not compile: ${errors ?? (e as Error).message}` }, logs: "" };
@@ -226,7 +231,14 @@ export async function runServerCode(root: string, source: string, entry: string,
     const dotenv = join(root, ".env");
     const child = spawn(process.execPath, [...(existsSync(dotenv) ? [`--env-file=${dotenv}`] : []), script], {
       cwd,
-      env: { ...process.env, ...(env.url ? { PAGENT_URL: env.url } : {}), ...(env.turn ? { PAGENT_TURN: env.turn } : {}), ...(env.call ? { PAGENT_CALL: env.call } : {}) },
+      env: {
+        ...process.env,
+        ...(env.url ? { PAGENT_URL: env.url } : {}),
+        ...(env.turn ? { PAGENT_TURN: env.turn } : {}),
+        ...(env.call ? { PAGENT_CALL: env.call } : {}),
+        // The node it runs as, for `node` from "pagent/server" (server-api.ts): a route and the root's code, the root.
+        PAGENT_HERE: JSON.stringify({ path: env.here?.path ?? "/", params: env.here?.params ?? {}, root }),
+      },
       stdio: ["pipe", "pipe", "pipe", "pipe"],
     });
     let stdout = "";

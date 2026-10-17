@@ -4,7 +4,7 @@ import { agentStatus, lookAt, type AgentRef, type Ctx } from "../agents.ts";
 import { appOf } from "../compile.ts";
 import type { AgentDecl } from "../extract.ts";
 import { realPath } from "../refs.ts";
-import { isNode, listNodes, nodeDir, normPath } from "../tree.ts";
+import { codeOf, instancesOf, listNodes, nodeDir, normPath, notMade } from "../tree.ts";
 import { value, type Args, type FlagSpec } from "./args.ts";
 
 export { parse, value, type Args } from "./args.ts";
@@ -45,13 +45,25 @@ export async function within<T>(ms: number, work: Promise<T>, now: (v: T) => str
   return note;
 }
 
-/** A node, as a path with or without the leading slash, or as its folder (absolute). */
-export function nodeArg(ctx: Ctx, s: string): string {
+/**
+ * A node, as a path with or without the leading slash, or as its folder (absolute); as its folder names it. An address
+ * a dynamic page matches is a node only once its instance is made (tree.ts), unless `unmade` (`tell --new`, which makes
+ * it): a typo is an error that lists the instances there are, not a fresh agent.
+ */
+export function nodeArg(ctx: Ctx, s: string, unmade = false): string {
   let p = s.trim().replace(/#.*$/, "");
   for (const root of new Set([ctx.root, realPath(ctx.root)])) if (p === root || p.startsWith(root + "/")) p = p.slice(root.length) || "/";
-  const path = normPath(p);
-  if (!isNode(ctx.root, path)) throw new Error(`no node ${path} in this app (\`pagent tree\` lists them)`);
-  return path;
+  const found = codeOf(ctx.root, normPath(p));
+  if (!found) throw new Error(`no node ${normPath(p)} in this app (\`pagent tree\` lists them)`);
+  if (!unmade && notMade(ctx.root, found.path)) {
+    const made = instancesOf(ctx.root, found.code);
+    throw new Error(
+      `no ${found.path} in this app: it would be an instance of ${found.code}, and none is made there. ` +
+        (made.length ? `Its instances: ${made.join(", ")}. ` : "It has no instances yet. ") +
+        `A new one is made by opening its page, or with \`pagent tell --new ${found.path} "…"\``,
+    );
+  }
+  return found.path;
 }
 
 export const folderOf = (ctx: Ctx, path: string) => nodeDir(ctx.root, path).replace(/\/$/, "");
@@ -93,11 +105,13 @@ function busyOf(s: ReturnType<typeof agentStatus>) {
 }
 
 /** An agent: "/ops#ops", "ops#ops", or "/ops" when that node has one agent. */
-export async function agentArg(ctx: Ctx, s: string | undefined): Promise<AgentRef> {
+export async function agentArg(ctx: Ctx, s: string | undefined, unmade = false): Promise<AgentRef> {
   if (!s) throw new Error("which agent? (`pagent agents` lists them)");
   const [n, a] = s.split("#");
-  const node = nodeArg(ctx, n || "/");
-  const agents = (await ctx.nodes.declarations(node)).manifest.agents;
+  const node = nodeArg(ctx, n || "/", unmade);
+  const d = await ctx.nodes.declarations(node);
+  if (d.refused) throw new Error(d.refused); // params its agents function refuses: no such instance
+  const agents = d.manifest.agents;
   const agent = a ?? (agents.length === 1 ? agents[0].name : "");
   if (!agents.some((d) => d.name === agent)) throw new Error(`no agent ${s}${agents.length ? ` (${node} has ${agents.map((d) => `${node}#${d.name}`).join(", ")})` : ""}; \`pagent agents\` lists them`);
   return { node, agent };

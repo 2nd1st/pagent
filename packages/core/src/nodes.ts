@@ -2,17 +2,23 @@
 // on disk: there is no published copy. Versions are the agent's git commits (it commits before and after a UI
 // change, so a change can be reverted); the engine keeps none of its own.
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { agentsOf } from "./agents-fn.ts";
 import { compileFile, importedNode, serverModule, type Compiled } from "./compile.ts";
 import { Deps } from "./deps.ts";
+import { broadcast } from "./events.ts";
 import { analyze, isServerFile, mergeManifest, serverExports, type Extracted } from "./extract.ts";
-import { hasFile, listNodes, nodeDir, resolveRoute, type NodeFile } from "./tree.ts";
+import { noteMade } from "./made.ts";
+import { codeOf, hasFile, instanceKeyOf, listNodes, makeFolder, nodeDir, notMade, resolveRoute, type NodeFile, type Params } from "./tree.ts";
 
 export type NodeInfo = {
   path: string;
   files: NodeFile[];
   manifest: Extracted;
   version: string;
+  /** An instance of a dynamic page: the values of its [segments] (its page gets them as `params`), and its code's folder. */
+  params?: Params;
+  code?: string;
 };
 
 /**
@@ -33,9 +39,11 @@ export function clientInfo(info: NodeInfo): ClientNodeInfo {
 
 /**
  * A page as navigation shows it. titled: false when the title is only the folder's name. lang: the language it says it
- * is in (metadata.lang); the home page's is the app's.
+ * is in (metadata.lang); the home page's is the app's. An instance of a dynamic page: instanceOf, its code's path
+ * (/studio/[ws]/[id]), and pageTitle, the title that page gives them all (its metadata.title), which names them as one
+ * entry in the rail.
  */
-export type PageEntry = { path: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string };
+export type PageEntry = { path: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; instanceOf?: string; pageTitle?: string };
 
 /** A page without metadata.title: its folder's name ("meal-plan" → "Meal plan"); the root is "Home". */
 export function fallbackTitle(path: string): string {
@@ -56,7 +64,11 @@ type Stamps = [string, string][];
 const stamped = (files: string[]): Stamps => files.map((f) => [f, stampOf(f)]);
 const unchanged = (stamps: Stamps) => stamps.every(([f, s]) => stampOf(f) === s);
 
-type Declarations = { dir: string; files: NodeFile[]; manifest: Extracted };
+/**
+ * dir: the folder the node's code is in (an instance's is its dynamic page's); params, code: an instance's (NodeInfo);
+ * refused: its agents function refused its params, and why (agents-fn.ts).
+ */
+type Declarations = { dir: string; files: NodeFile[]; manifest: Extracted; params?: Params; code?: string; refused?: string };
 
 export class Nodes {
   readonly root: string;
@@ -89,65 +101,89 @@ export class Nodes {
     if (kept && kept.generation === generation && unchanged(kept.stamps)) value = kept.value;
     else {
       // Stamped before reading: a file that changes meanwhile is read again next time (a file added, the folder's stamp).
-      const dir = nodeDir(this.root, path);
+      const found = codeOf(this.root, path);
+      if (!found) throw new Error(`no node at ${path}`);
+      const dir = join(this.root, found.code);
       const stamps = stamped([dir, ...readdirSync(dir).filter((f) => /\.(tsx|ts|js)$/.test(f)).map((f) => join(dir, f))]);
-      value = this.readDeclarations(path);
+      value = await this.readDeclarations(path, found.code, found.params);
       this.read.set(path, { generation, stamps, value });
     }
     // Callers may add to its errors (info): a copy of what is kept.
     return { ...value, files: [...value.files], manifest: { ...value.manifest, errors: [...value.manifest.errors] } };
   }
 
-  private readDeclarations(path: string): Declarations {
-    const dir = nodeDir(this.root, path);
+  private async readDeclarations(path: string, code: string, params: Params): Promise<Declarations> {
+    const dir = nodeDir(this.root, code);
     const files = (["layout", "page"] as NodeFile[]).filter((f) => hasFile(dir, f));
-    const prefix = path === "/" ? "" : path;
+    const prefix = code === "/" ? "" : code;
     const shared = (source: string) => importedNode(this.root, source)?.shared ?? false;
     const server = (source: string) => serverModule(this.root, source) !== null;
     const parts = files.map((f) => analyze(readFileSync(join(dir, `${f}.tsx`), "utf8"), `${prefix}/${f}.tsx`, shared, server));
+    // agents as a function of the params: run for this node (agents-fn.ts).
+    let refused: string | undefined;
+    for (const [i, part] of parts.entries()) {
+      if (part.agentsFn === undefined) continue;
+      const r = await agentsOf(this.root, join(dir, `${files[i]}.tsx`), part.agentsFn, params, this.url, path);
+      part.agents = r.agents;
+      part.errors.push(...(r.errors.length ? r.errors : r.refused ? [r.refused] : []));
+      refused ??= r.refused;
+    }
     // "use server" files in the node folder: each exported function is an action.
     for (const file of readdirSync(dir).filter((f) => /\.(ts|js)$/.test(f) && !f.endsWith(".d.ts"))) {
-      const code = readFileSync(join(dir, file), "utf8");
-      if (!isServerFile(code)) continue;
-      const { names, errors, about } = serverExports(code, `${prefix}/${file}`);
+      const text = readFileSync(join(dir, file), "utf8");
+      if (!isServerFile(text)) continue;
+      const { names, errors, about } = serverExports(text, `${prefix}/${file}`);
       parts.push({ ...analyze("", file), actions: names.map((name) => ({ name, file, ...about[name] })), errors });
     }
-    return { dir, files, manifest: mergeManifest(parts) };
+    return { dir, files, manifest: mergeManifest(parts), ...(code !== path ? { params, code } : {}), ...(refused ? { refused } : {}) };
+  }
+
+  /**
+   * Make an instance of a dynamic page (its folder: tree.ts), as opening its page or `pagent tell --new` does; unless
+   * its agents function refuses its params (returns null, or throws), which is then the error. path: as its folder has
+   * it (canonical). by: who made it, when not the person opening its page (made.ts).
+   */
+  async make(path: string, by?: string): Promise<void> {
+    if (!notMade(this.root, path)) return;
+    const d = await this.declarations(path);
+    if (d.refused) throw new Error(d.refused);
+    makeFolder(this.root, path);
+    noteMade(this.root, path, by);
+    broadcast({ type: "code", path }); // a page more: navigation lists it, triggers arm for it
   }
 
   /**
    * The app's pages, for navigation: every route (a folder with page.tsx, not under .mounts or a _private / dot
-   * folder) with what it calls itself (metadata.title, else its folder's name) and its agents (names only).
+   * folder) with what it calls itself (metadata.title, else its folder's name) and its agents (names only). An instance
+   * of a dynamic page is called by its last param (fix-login, 修登录): its page's title names them all.
    */
   async pages(): Promise<PageEntry[]> {
-    const out: PageEntry[] = [];
-    for (const path of listNodes(this.root)) {
-      if (path.includes("/.mounts") || !resolveRoute(this.root, path)) continue;
-      const decl = await this.declarations(path).catch(() => null);
-      const own = decl?.manifest.title;
-      const order = decl?.manifest.order;
-      const lang = decl?.manifest.lang;
-      out.push({ path, title: own ?? fallbackTitle(path), titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}), ...(lang ? { lang } : {}) });
-    }
-    return out;
+    const paths = listNodes(this.root).filter((path) => !path.includes("/.mounts") && resolveRoute(this.root, path));
+    // At once: an agents function runs in a process of its own (agents-fn.ts).
+    return Promise.all(
+      paths.map(async (path): Promise<PageEntry> => {
+        const decl = await this.declarations(path).catch(() => null);
+        const name = path.slice(path.lastIndexOf("/") + 1);
+        const own = decl?.code ? undefined : decl?.manifest.title;
+        const title = own ?? (decl?.code ? (instanceKeyOf(name) ?? name) : fallbackTitle(path));
+        const order = decl?.manifest.order;
+        const lang = decl?.manifest.lang;
+        const of = decl?.code ? { instanceOf: decl.code, ...(decl.manifest.title ? { pageTitle: decl.manifest.title } : {}) } : {};
+        return { path, title, titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}), ...(lang ? { lang } : {}), ...of };
+      }),
+    );
   }
 
   async info(path: string): Promise<NodeInfo> {
-    const { files, manifest } = await this.declarations(path);
+    const { files, manifest, params, code } = await this.declarations(path);
     const compiled = await Promise.all(files.map((f) => this.module(path, f)));
     for (const c of compiled) manifest.errors.push(...c.errors);
-    // A folder is one session: agents without a sessionId continue the latest session in their folder,
-    // so two of them in the same folder would share it.
-    const byFolder = new Map<string, string[]>();
-    for (const a of manifest.agents) {
-      if (a.session) continue;
-      const folder = typeof a.cwd === "string" ? a.cwd : "(node folder)";
-      byFolder.set(folder, [...(byFolder.get(folder) ?? []), a.name]);
-    }
-    for (const [folder, names] of byFolder) {
-      if (names.length > 1) manifest.errors.push(`agents ${names.join(", ")} share ${folder}, so they would share one session; give each its own folder (a child node) or a sessionId`);
-    }
-    return { path, files, manifest, version: compiled.map((c) => c.hash).join("-") || "empty" };
+    // The node's folder is one session: an agent working in it (no cwd of its own, no sessionId) continues the latest
+    // session there, so two of them would share it. One working elsewhere keeps a session of its own (runner.ts).
+    const dir = resolve(this.root, `.${path}`);
+    const inFolder = manifest.agents.filter((a) => !a.session && a.remote === undefined && (typeof a.cwd !== "string" || resolve(a.cwd) === dir));
+    if (inFolder.length > 1) manifest.errors.push(`agents ${inFolder.map((a) => a.name).join(", ")} work in the node's folder, so they would share its session; give each its own folder (a child node), a cwd or a sessionId`);
+    return { path, files, manifest, version: compiled.map((c) => c.hash).join("-") || "empty", ...(code ? { params, code } : {}) };
   }
 
   /** A node file compiled; kept while what it was made from (and the app's shared modules) stay the same. */

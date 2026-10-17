@@ -38,6 +38,8 @@ type Live = {
   stopping?: boolean;
 };
 const lives = new Map<string, Live>();
+// Runs whose session is still being made (ensureSession): busy already, but not in `lives` yet, so a stop must find them.
+const starting = new Map<string, Set<Run>>();
 const SESSION_IDLE = 10 * 60_000; // no TUI, no turn, for this long: the session ends (the thread is resumed next time)
 
 /**
@@ -155,8 +157,15 @@ function adopt(ctx: Ctx, live: Live, e: any): Bound {
 
 /** A run on the agent's thread: its message goes to the session at once, and it ends with the turn that answers it. */
 async function turn({ ctx, run, push, input, message }: Turn): Promise<string> {
+  const key = keyOf(run.ref);
+  const pending = starting.get(key) ?? starting.set(key, new Set()).get(key)!;
+  pending.add(run);
   try {
-    const live = await ensureSession(ctx, run.ref);
+    const live = await ensureSession(ctx, run.ref).finally(() => {
+      pending.delete(run);
+      if (!pending.size && starting.get(key) === pending) starting.delete(key);
+    });
+    if (run.stopped) return ""; // stopped while its session was starting: its message is never sent
     return await new Promise<string>((resolve) => {
       live.waiting.set(run.id, { run, push, forward: chunkHandler(run, push, () => {}), resolve });
       const meta = { caller: input.caller, unattended: run.unattended, user: run.user, chain: input.chain, replyTo: input.replyTo, replyPost: input.replyPost };
@@ -172,14 +181,28 @@ async function turn({ ctx, run, push, input, message }: Turn): Promise<string> {
 /** Stop the turn the agent's session is in (the runner's "interrupt": Codex's turn/interrupt); its runs end with it. */
 async function stop(_ctx: Ctx, ref: AgentRef): Promise<string | null> {
   const live = lives.get(keyOf(ref));
-  if (!live || !(live.bound.length || live.waiting.size)) return null;
-  for (const b of [...live.bound, ...live.waiting.values()]) b.run.stopped = true;
-  procOp("write", live.id, { data: `${JSON.stringify({ op: "interrupt" })}\n` });
+  const pending = [...(starting.get(keyOf(ref)) ?? [])];
+  const inTurn = live ? [...live.bound, ...live.waiting.values()].map((b) => b.run) : [];
+  if (!inTurn.length && !pending.length) return null;
+  for (const r of [...inTurn, ...pending]) r.stopped = true;
+  if (inTurn.length) procOp("write", live!.id, { data: `${JSON.stringify({ op: "interrupt" })}\n` });
   return "interrupted the turn in progress";
 }
 
 /** Is the agent a client of its thread now (a message to it goes into its turn in progress)? */
 export const onThread = (ref: AgentRef) => lives.has(keyOf(ref));
+
+/**
+ * End the agent's session now (its node moves, `pagent mv`: the process has the old folder and the old address). The
+ * thread stays; the next message opens it again from the new place.
+ */
+export async function endSession(ref: AgentRef): Promise<void> {
+  const live = lives.get(keyOf(ref));
+  if (!live) return;
+  live.stopping = true;
+  procOp("write", live.id, { data: `${JSON.stringify({ op: "stop" })}\n` });
+  for (let i = 0; i < 100 && lives.get(keyOf(ref)) === live; i++) await new Promise((r) => setTimeout(r, 100));
+}
 
 /** The runner's quick ops read the thread the agent's session has open (and its service must be up to answer). */
 async function opInput(_ctx: Ctx, ref: AgentRef, script: string, cwd: string): Promise<Record<string, unknown>> {

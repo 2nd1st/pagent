@@ -2,9 +2,9 @@
 //   <AgentBar>      a bottom input; the reply is one bubble above it
 //   <AgentConsole>  full screen: every turn, tool calls, questions, slash commands
 //   <AgentFab>      a status button in the corner that opens either
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent as ReactDragEvent, type ReactNode } from "react";
 import type { FileUIPart, UIMessage } from "ai";
-import { draftKey, FormStatesOf, LOCK_ICON, Part, toolLabel, Turns, useAgentChat, useDraft } from "./chat.tsx";
+import { draftKey, FormStatesOf, LOCK_ICON, Part, toolLabel, Turns, useAgentChat, useDraft, type ChatTurn } from "./chat.tsx";
 import { IMAGE_TYPES, imagePart, imagesIn } from "./attach.ts";
 import type { CardsShown } from "./cards.tsx";
 import { labelOf, sayIn, t, tn, useLanguage } from "./i18n.ts";
@@ -279,17 +279,53 @@ function useAutoFocus<T extends HTMLElement>() {
 type Attaching = { add: (files: File[]) => void };
 
 /**
- * Text input that sends on Enter; offers slash commands when the text starts with "/". What is typed and not sent is
- * kept in this browser under `keep` (useDraft), so it survives the page mounting again. Images go with the message:
- * the clip, a paste, or (`attach`: how the conversation around it hands one over) a drop; they show above the text
- * until it is sent. The agent gets each as a file it reads (core: agents/attachments.ts).
+ * What a composer's completion offers for what follows its character (AgentConsole's `complete`): the text it puts in
+ * (`value`: "@src/slug.ts " goes in for "src/slug.ts"), and how the list shows it (`label`, else the value).
  */
-function Composer({ onSend, onInterject, disabled, commands = [], placeholder, keep, attach }: {
+export type Completion = string | { value: string; label?: ReactNode };
+const valueOf = (c: Completion) => (typeof c === "string" ? c : c.value);
+
+// The composers on screen, by the draft they keep (an agent's): what useComposer's insert reaches.
+const composers = new Map<string, (text: string) => void>();
+
+/**
+ * The composer of an agent's conversation (AgentConsole's), from elsewhere on the page: `insert(text)` adds to what is
+ * being written there (a file's "Mention" button), at its end. With no console on screen, it goes into the draft the
+ * console finds when it opens.
+ */
+export function useComposer(explicit?: AgentHandle | string): { insert: (text: string) => void } {
+  const agent = useResolvedAgent(explicit);
+  const key = draftKey(agent);
+  return useMemo(
+    () => ({
+      insert(text: string) {
+        const live = composers.get(key);
+        if (live) return live(text);
+        try {
+          localStorage.setItem(key, joined(localStorage.getItem(key) ?? "", text));
+        } catch {}
+      },
+    }),
+    [key],
+  );
+}
+/** Text added at the end of a draft, a space between them. */
+const joined = (draft: string, text: string) => `${draft}${draft && !/\s$/.test(draft) ? " " : ""}${text}`;
+
+/**
+ * Text input that sends on Enter; offers slash commands when the text starts with "/", and `complete`'s suggestions
+ * when one of its characters starts a word ("@" + what follows: the files). What is typed and not sent is kept in this
+ * browser under `keep` (useDraft), so it survives the page mounting again. Images go with the message: the clip, a
+ * paste, or (`attach`: how the conversation around it hands one over) a drop; they show above the text until it is
+ * sent. The agent gets each as a file it reads (core: agents/attachments.ts).
+ */
+function Composer({ onSend, onInterject, disabled, commands = [], complete, placeholder, keep, attach }: {
   onSend: (text: string, files: FileUIPart[]) => void;
   /** Given: a second button (and ⌘/Ctrl+Enter) that sends into the agent's turn in progress. */
   onInterject?: (text: string, files: FileUIPart[]) => void;
   disabled?: boolean;
   commands?: string[];
+  complete?: Record<string, (query: string) => Completion[]>;
   placeholder: string;
   keep: string;
   attach?: { current: Attaching | null };
@@ -301,10 +337,55 @@ function Composer({ onSend, onInterject, disabled, commands = [], placeholder, k
   const [adding, setAdding] = useState(0);
   const [failed, setFailed] = useState<string | null>(null);
   const ref = useAutoFocus<HTMLTextAreaElement>();
+  const [caret, setCaret] = useState(0);
+  const [focused, setFocused] = useState(true);
+  const [closed, setClosed] = useState<number | null>(null); // Escape on the suggestions at this word: closed
   const matches = useMemo(() => {
     const m = draft.match(/^\/(\S*)$/);
     return m ? commands.filter((c) => c.toLowerCase().includes(m[1].toLowerCase())).slice(0, 8) : [];
   }, [draft, commands]);
+  // A completion: a word starting with one of complete's characters right before the caret, and what it offers.
+  const word = useMemo(() => {
+    if (!complete || matches.length) return null;
+    const before = draft.slice(0, caret);
+    for (const [char, source] of Object.entries(complete)) {
+      const esc = char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const m = new RegExp(`(?:^|\\s)${esc}([^\\s${esc}]*)$`).exec(before);
+      if (!m) continue;
+      const start = before.length - m[1].length - char.length;
+      const items = start === closed ? [] : source(m[1]).slice(0, 8);
+      return items.length ? { char, start, items } : null;
+    }
+    return null;
+  }, [draft, caret, complete, matches.length, closed]);
+  const suggesting = focused && !!word;
+  // Where the caret goes once the text it was put in is on screen (-1: the end): set before the next key comes in,
+  // not a frame later, or what is typed right after a pick lands where the caret was.
+  const place = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (place.current === null || !el) return;
+    const at = place.current < 0 ? el.value.length : place.current;
+    place.current = null;
+    el.setSelectionRange(at, at);
+    setCaret(at);
+  }, [draft]);
+  const choose = (c: Completion) => {
+    if (!word) return;
+    const head = `${draft.slice(0, word.start)}${word.char}${valueOf(c)} `;
+    place.current = head.length;
+    setDraft(head + draft.slice(caret).replace(/^\s/, ""));
+  };
+  // useComposer().insert: at the end of what is written, then the caret there.
+  useEffect(() => {
+    const insert = (text: string) => {
+      place.current = -1;
+      setDraft((d) => joined(d, text));
+      ref.current?.focus();
+    };
+    composers.set(keep, insert);
+    return () => void (composers.get(keep) === insert && composers.delete(keep));
+  }, [keep]);
 
   const add = (list: File[]) => {
     if (!list.length) return;
@@ -350,13 +431,32 @@ function Composer({ onSend, onInterject, disabled, commands = [], placeholder, k
           ))}
         </div>
       )}
+      {suggesting && word && (
+        <div className="pagent-commands pagent-completions" role="listbox">
+          {word.items.map((c, i) => (
+            <button type="button" role="option" key={valueOf(c)} aria-selected={i === pick} data-active={i === pick} title={valueOf(c)} onMouseDown={(e) => (e.preventDefault(), choose(c))}>
+              {typeof c === "string" ? c : (c.label ?? c.value)}
+            </button>
+          ))}
+        </div>
+      )}
       <textarea
         ref={ref}
         value={draft}
         rows={1}
         placeholder={placeholder}
-        onChange={(e) => (setDraft(e.target.value), setPick(0))}
+        onChange={(e) => (setDraft(e.target.value), setCaret(e.target.selectionStart), setPick(0), setClosed(null))}
+        onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onKeyDown={(e) => {
+          // The suggestions take the keys that move through them, pick one, or close them.
+          if (suggesting && word) {
+            const n = word.items.length;
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") return void (e.preventDefault(), setPick((p) => (p + (e.key === "ArrowDown" ? 1 : n - 1)) % n));
+            if ((e.key === "Enter" && !e.nativeEvent.isComposing) || e.key === "Tab") return void (e.preventDefault(), choose(word.items[Math.min(pick, n - 1)]), setPick(0));
+            if (e.key === "Escape") return void (e.preventDefault(), e.stopPropagation(), setClosed(word.start));
+          }
           if (matches.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
             e.preventDefault();
             setPick((p) => (p + (e.key === "ArrowDown" ? 1 : matches.length - 1)) % matches.length);
@@ -494,8 +594,12 @@ const readerAt = new Map<string, number>();
  * Full screen: every turn with its tool calls, questions inline, slash commands. Close it and the work goes on. Turns
  * between agents (and the engine's notices) fold into a line each; `chatter="show"` shows them as they are. `cards`:
  * how the cards in replies show: "open" (default), "folded" to their title row until opened, or "compact".
+ *
+ * A page that is a conversation adds its own to it in two places: under each turn (`turnFooter`: what that turn
+ * changed, say), and in the composer (`complete`: suggestions for a word that starts with one of its characters, "@"
+ * for the project's files; useComposer().insert puts text in it from elsewhere on the page).
  */
-export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, style, empty, chatter, cards }: {
+export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, style, empty, chatter, cards, turnFooter, complete }: {
   agent?: AgentHandle | string;
   onCollapse?: () => void;
   onClose?: () => void;
@@ -507,6 +611,10 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
   chatter?: "fold" | "show";
   /** cards in replies: open (default), folded to their title row until opened, or compact (open, shorter) */
   cards?: CardsShown;
+  /** shown under each turn: it (its messages, what it was asked, whether it is still running), and all of them */
+  turnFooter?: (turn: ChatTurn, turns: ChatTurn[]) => ReactNode;
+  /** by character: what to suggest for the word it starts ("@": (query) => the files matching it) */
+  complete?: Record<string, (query: string) => Completion[]>;
 }) {
   useLanguage();
   const agent = useResolvedAgent(explicit);
@@ -623,7 +731,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
       <div className="pagent-console-log" ref={logRef}>
         {messages.length === 0 && (loaded ? <div className="pagent-console-empty">{empty ?? t("console.empty")}</div> : <div className="pagent-muted">{t("loading")}</div>)}
         <FormStatesOf agent={agent} messages={messages}>
-          <Turns messages={messages} me={agent.agent} detailed chatter={chatter} cards={cards} />
+          <Turns messages={messages} me={agent} detailed chatter={chatter} cards={cards} footer={turnFooter} busy={status.busy} />
         </FormStatesOf>
         <Working status={status} />
         {status.questions.map((q) => <QuestionCard key={q.id} question={q} />)}
@@ -646,6 +754,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
           // What it is doing shows at the end of the conversation; here only what sending does meanwhile.
           placeholder={t(!status.busy ? "console.placeholder" : status.interject ? "console.queueOrNow" : "console.queue")}
           commands={status.session.slashCommands}
+          complete={complete}
           attach={attach}
           onSend={(text, files) => (status.busy ? setQueued((x) => [...x, { text, files }]) : send(text, files))}
           onInterject={status.busy && status.interject ? (text, files) => send(text, files, true) : undefined}

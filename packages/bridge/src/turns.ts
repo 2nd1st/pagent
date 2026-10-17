@@ -11,6 +11,7 @@
 // for every harness.
 import type { UIMessage } from "ai";
 import type { Caller } from "./contract.ts";
+import { keyOfFolder } from "./instance.ts";
 
 /** Who a message in the session is from (a reply: the agent). */
 export type From =
@@ -78,10 +79,33 @@ export type Row =
   /** The summary its session goes on from (message: it, its text the summary; empty when the harness keeps none). */
   | { type: "compaction"; message: UIMessage }
   /**
-   * Turns between agents, folded: `with` who the agent talked with ("ideas", "sub-agent", "pagent"), `exchanges` how
-   * many messages came in, `glimpse` a line of it (where another agent may have said something for the person).
+   * Turns between agents, folded: `with` who the agent talked with (an agent of the app by its address, "/ideas#ideas";
+   * else "sub-agent", "pagent", an outside host: chatterLabels names them), `exchanges` how many messages came in,
+   * `glimpse` a line of it (where another agent may have said something for the person).
    */
   | { type: "chatter"; id: string; with: string[]; exchanges: number; glimpse: string; messages: UIMessage[] };
+
+const isAgentKey = (w: string) => /^\/[^#]*#[^#]+$/.test(w);
+const split = (key: string) => [key.slice(0, key.lastIndexOf("#")), key.slice(key.lastIndexOf("#") + 1)] as const;
+/** A node's own name: its last segment, as written (an instance's id, 修登录 for +4fee+767b+5f55); the root: "/". */
+const nodeName = (node: string) => keyOfFolder(node.slice(node.lastIndexOf("/") + 1)) || "/";
+
+/**
+ * Who talked, as one line says it ("main ↔ ideas"): each agent by its name, unless another one in the line has the
+ * same name (two instances of one dynamic page, both "main"); those by their node's own name (fix-tests ↔
+ * add-titlecase), and by their whole address when even that is the same.
+ */
+export function chatterLabels(me: { node: string; agent: string }, withs: string[]): { me: string; with: string[] } {
+  const meKey = `${me.node}#${me.agent}`;
+  const agents = [meKey, ...withs.filter(isAgentKey)];
+  const label = (key: string) => {
+    const [node, agent] = split(key);
+    const same = agents.filter((k) => k !== key && split(k)[1] === agent);
+    if (!same.length) return agent;
+    return same.some((k) => nodeName(split(k)[0]) === nodeName(node)) ? key : nodeName(node);
+  };
+  return { me: label(meKey), with: withs.map((w) => (isAgentKey(w) ? label(w) : w)) };
+}
 
 const RESULT = /^Result of your delegation to \S+(?: \(message \S+\))?:\s*/;
 const oneLine = (s: string) => s.replace(/```[\s\S]*?(```|$)/g, " ").replace(/[*_`#>|]/g, "").replace(/\s+/g, " ").trim();
@@ -121,7 +145,7 @@ export function rowsOf(messages: UIMessage[], opts: { fold?: boolean } = {}): Ro
     if (from.kind !== "reply") {
       if (!fold || !folds(from)) close();
       else {
-        const who = from.kind === "agent" ? from.agent : from.kind === "outside" ? from.who : from.kind === "subagent" ? "sub-agent" : "pagent";
+        const who = from.kind === "agent" ? `${from.node}#${from.agent}` : from.kind === "outside" ? from.who : from.kind === "subagent" ? "sub-agent" : "pagent";
         if (!run) {
           run = { type: "chatter", id: original.id, with: [], exchanges: 0, glimpse: "", messages: [] };
           incoming = [];

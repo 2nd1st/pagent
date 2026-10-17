@@ -37,6 +37,21 @@ export function drop(root: string, id: string) {
   rmSync(file(root, id), { force: true });
 }
 
+/**
+ * A node moved (`pagent mv`): what is on its way to its agents (or to the ones under it), and what waits on them
+ * (a delegation's result, a chain), goes to their new addresses; their open questions stay theirs.
+ */
+export function moveLetters(root: string, rename: (path: string) => string) {
+  const at = <T extends { node: string }>(r: T): T => ({ ...r, node: rename(r.node) });
+  for (const l of letters(root)) {
+    const next: Letter =
+      l.kind === "question"
+        ? at(l)
+        : { ...l, input: { ...at(l.input), ...(l.input.replyTo ? { replyTo: at(l.input.replyTo) } : {}), ...(l.input.chain ? { chain: l.input.chain.map(at) } : {}) } };
+    if (JSON.stringify(next) !== JSON.stringify(l)) keep(root, next);
+  }
+}
+
 /** Everything in the app's inbox, oldest first. A `.tmp` left behind is a write its server died in: it never counted. */
 export function letters(root: string): Letter[] {
   let names: string[];

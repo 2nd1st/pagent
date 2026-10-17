@@ -28,7 +28,10 @@ import { presence, screenResult } from "./screen.ts";
 import { broadcast, onEvent, sse, watchTree } from "./events.ts";
 import { ensureFork } from "./fork.ts";
 import { clientInfo, Nodes } from "./nodes.ts";
-import { instancePathError, isNode, normPath, resolveRoute, type NodeFile } from "./tree.ts";
+import { canonical, codeDir, codeOf, hasFile, instancePathError, instancesOf, isNode, normPath, resolveRoute, type NodeFile } from "./tree.ts";
+import { madeOf, shownPath } from "./made.ts";
+import { moveNode, removeInstance } from "./moves.ts";
+import { movedText } from "./commands/nodes.ts";
 import { COOKIE, isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
 import { createKey, presentedKey, reaches, resolveKey, revokeKey, type KeyHolder } from "./keys.ts";
 
@@ -253,9 +256,15 @@ export function startServer(opts: ServerOptions) {
         case "GET /_pagent/events":
           return sse(req, res, q("client") || null);
 
+        // The layouts and the page a URL shows; the page's params (the shell's useParams); whether it fills the window
+        // (metadata.fill of the page or a layout above it, the nearest that says).
         case "GET /_pagent/route": {
           const chain = resolveRoute(root, q("path") || "/");
-          return chain ? json(res, 200, { chain }) : json(res, 404, { error: "not found" });
+          if (!chain) return json(res, 404, { error: "not found" });
+          const page = chain[chain.length - 1].path;
+          const fills = await Promise.all(chain.map((e) => nodes.declarations(e.path).then((d) => d.manifest.fill, () => undefined)));
+          const fill = fills.reduce<boolean | undefined>((was, f) => f ?? was, undefined) ?? false;
+          return json(res, 200, { chain, params: codeOf(root, page)?.params ?? {}, fill });
         }
 
         // The app's pages with their titles and agents: the shell's navigation.
@@ -263,15 +272,24 @@ export function startServer(opts: ServerOptions) {
           return json(res, 200, { pages: await nodes.pages() });
 
         // from: an instance (<node>/.mounts/<its key's folder>) of that node, made when it is not there yet; notes: what
-        // its frame shows besides it (fork.ts).
+        // its frame shows besides it (fork.ts). An instance of a dynamic page is made when it is opened, unless its agents
+        // function refuses its params (Nodes.make: the 404 says why).
         case "GET /_pagent/node": {
-          const path = normPath(q("path"));
+          let path = normPath(q("path"));
           let notes: string[] = [];
           if (q("from")) {
             const bad = instancePathError(path);
             if (bad) return json(res, 400, { error: bad });
             notes = await ensureFork(root, path, q("from"));
           } else if (!isNode(root, path)) return json(res, 404, { error: `no node at ${path}` }); // e.g. a card naming a page that is gone
+          else {
+            // Only a page is made by opening it: a layout above it (/studio/<ws> of studio/[ws]/layout.tsx) is its folder's
+            // parent, made with it, or nothing when the page refuses its params.
+            path = canonical(root, path);
+            const page = hasFile(codeDir(root, path), "page");
+            const no = page ? await nodes.make(path).then(() => null, (e: Error) => e.message) : null;
+            if (no) return json(res, 404, { error: `no node at ${path}: ${no}` });
+          }
           return json(res, 200, { ...clientInfo(await nodes.info(path)), ...(notes.length ? { notes } : {}) });
         }
 
@@ -344,7 +362,7 @@ export function startServer(opts: ServerOptions) {
         // whom it runs for) and its turn (quit.ts). The value, or the error's message (actions.ts).
         case "POST /_pagent/action": {
           const { node, name, input, from, turn, call } = (await readBody(req)) as { node: string; name: string; input?: unknown; from?: unknown; turn?: unknown; call?: unknown };
-          const path = normPath(node);
+          const path = canonical(root, normPath(node)); // /studio/demo/修登录 is /studio/demo/+4fee+767b+5f55
           const caller = callOf(call)?.caller ?? { kind: "page" as const, path: typeof from === "string" ? normPath(from) : path };
           const r = await runAction(root, nodes, path, name, input, { caller, turn: typeof turn === "string" ? turn : undefined });
           if (!r.ok) console.error(`action ${path}:${name} failed:\n${r.stack ?? r.error}\n${r.logs}`.trim());
@@ -354,11 +372,11 @@ export function startServer(opts: ServerOptions) {
         // tell() from the app's server code ("pagent/server"): it names the call it runs in (calls.ts), which says whom
         // it runs for. A process the engine did not start has none.
         case "POST /_pagent/tell": {
-          const b = (await readBody(req)) as { call?: string; to?: string; message?: string; from?: string; stranger?: boolean; interject?: boolean; wait?: boolean | number };
+          const b = (await readBody(req)) as { call?: string; to?: string; message?: string; from?: string; stranger?: boolean; interject?: boolean; wait?: boolean | number; new?: boolean };
           const call = callOf(b.call);
           if (!call) return json(res, 403, { error: "tell() works in the app's server code (an action, a route), as the engine runs it" });
           try {
-            return json(res, 200, await tell(ctx, call, String(b.to ?? ""), String(b.message ?? ""), { from: b.from, stranger: !!b.stranger, interject: !!b.interject, wait: b.wait }));
+            return json(res, 200, await tell(ctx, call, String(b.to ?? ""), String(b.message ?? ""), { from: b.from, stranger: !!b.stranger, interject: !!b.interject, wait: b.wait, new: !!b.new }));
           } catch (e) {
             return json(res, 422, { error: (e as Error).message });
           }
@@ -441,6 +459,30 @@ export function startServer(opts: ServerOptions) {
           if (!body?.node || !body.agent) return json(res, 400, { error: "node and agent" });
           return json(res, 200, { said: await stopTurn(ctx, { node: normPath(body.node), agent: body.agent }) });
         }
+
+        // Moving a node and removing an instance of a dynamic page (moves.ts): the person's `pagent mv`, and server code's
+        // nodes.move / nodes.remove ("pagent/server"). 422 with why when it is refused.
+        case "POST /_pagent/move":
+        case "POST /_pagent/remove": {
+          const body = (await readBody(req)) as { from?: string; to?: string; path?: string };
+          try {
+            if (url.pathname === "/_pagent/remove") return json(res, 200, { removed: await removeInstance(ctx, String(body.path ?? "")) });
+            const moved = await moveNode(ctx, String(body.from ?? ""), String(body.to ?? ""));
+            return json(res, 200, { ...moved, text: movedText(moved) });
+          } catch (e) {
+            return json(res, 422, { error: (e as Error).message });
+          }
+        }
+
+        // The instances of a dynamic page that are made (of: its code's path, /studio/[ws]/[id]): their address as the
+        // engine has it (path) and as people read it (url), their params, who made them and when (made.ts).
+        case "GET /_pagent/instances":
+          return json(res, 200, {
+            instances: instancesOf(root, q("of")).map((path) => {
+              const made = madeOf(root, path);
+              return { path, url: shownPath(root, path), params: codeOf(root, path)?.params ?? {}, ...(made.by ? { createdBy: made.by } : {}), createdAt: made.at };
+            }),
+          });
 
         // useChat transport: attach to whatever the agent is doing right now (204 = idle).
         case "GET /_pagent/chat/stream": {

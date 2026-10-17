@@ -1,6 +1,6 @@
 // Conversations with an agent, on AI SDK's useChat. The native transcript is the history; live turns stream
 // as UI message chunks; turns started elsewhere (a bubbled ask, another tab) are attached with resumeStream.
-import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createContext, Fragment, memo, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useChat } from "@ai-sdk/react";
 import type { UIMessage } from "ai";
 import Markdown from "react-markdown";
@@ -10,7 +10,7 @@ import { commandOf, formAskOf, formStates, type FormAsk, type FormState } from "
 import { useHost, useResolvedAgent, useScope, type AgentHandle } from "./index.tsx";
 import { CardsShownContext, NodeCard, splitCards, type CardsShown } from "./cards.tsx";
 import { mergeHistory, shownId, shownIds } from "./history.ts";
-import { rowsOf, type Row } from "./turns.ts";
+import { chatterLabels, rowsOf, type Row } from "./turns.ts";
 import { t, tn, toolWord, useLanguage } from "./i18n.ts";
 
 /** localStorage["pagent:debug"] = "chat": how each history load changed the conversation, in the console. */
@@ -112,7 +112,7 @@ export const draftKey = (agent: AgentRef) => `pagent:draft:${agent.node}#${agent
  * agent changed its code, a reload) gets back what was being typed. Set it to "" when sending. The key is read once:
  * a composer for another agent is another component (give it a React key).
  */
-export function useDraft(key: string): [string, (text: string) => void] {
+export function useDraft(key: string): [string, (text: string | ((was: string) => string)) => void] {
   const [draft, setDraft] = useState(() => localStorage.getItem(key) ?? "");
   useEffect(() => {
     try {
@@ -288,36 +288,70 @@ const Chevron = () => (
 );
 
 /**
+ * A turn of the conversation, as a page sees it under itself (AgentConsole's turnFooter): what started it (a person's
+ * message, a page's, or, folded, the agents' exchange) and the replies, until the next. id: its first message's;
+ * prompt: what it was asked, as given (the text of that message); messages: all of it, in order; running: it is the
+ * last one and the agent is still at it.
+ */
+export type ChatTurn = { id: string; prompt: string; messages: UIMessage[]; running: boolean };
+
+/**
  * A conversation's messages as a person reads them (turns.ts): their turns as they are; turns between agents (and
  * the engine's notices) folded into one line each, unless `chatter` is "show"; the summary after a compaction as a
- * divider. `me`: whose conversation it is (the agent's name). `cards`: how the cards in replies show (cards.tsx).
+ * divider. `me`: whose conversation it is. `cards`: how the cards in replies show (cards.tsx). `footer`: what to show
+ * under each turn, given it and all of them (the same array for every turn of one render: something matched over the
+ * whole conversation is worked out once); busy: the agent is in one, so the last turn is running.
  */
-export function Turns({ messages, me, detailed, chatter = "fold", cards = "open" }: { messages: UIMessage[]; me: string; detailed?: boolean; chatter?: "fold" | "show"; cards?: CardsShown }) {
+export function Turns({ messages, me, detailed, chatter = "fold", cards = "open", footer, busy }: { messages: UIMessage[]; me: AgentRef; detailed?: boolean; chatter?: "fold" | "show"; cards?: CardsShown; footer?: (turn: ChatTurn, turns: ChatTurn[]) => ReactNode; busy?: boolean }) {
   const rows = useMemo(() => rowsOf(messages, { fold: chatter !== "show" }), [messages, chatter]);
+  const row = (r: Row) =>
+    r.type === "message" ? (
+      <MessageView key={r.message.id} message={r.message} detailed={detailed} />
+    ) : r.type === "compaction" ? (
+      <Compaction key={r.message.id} message={r.message} />
+    ) : (
+      <Chatter key={r.id} row={r} me={me} detailed={detailed} />
+    );
+  if (!footer) return <CardsShownContext.Provider value={cards}>{rows.map(row)}</CardsShownContext.Provider>;
+  // Rows by turn: one starts at each message to the agent (or folded exchange); its replies follow.
+  const turns: { rows: Row[]; messages: UIMessage[] }[] = [];
+  for (const r of rows) {
+    const starts = r.type === "chatter" || (r.type === "message" && r.message.role === "user");
+    if (starts || !turns.length) turns.push({ rows: [], messages: [] });
+    const t = turns[turns.length - 1];
+    t.rows.push(r);
+    t.messages.push(...(r.type === "chatter" ? r.messages : [r.message]));
+  }
+  const all: ChatTurn[] = turns.map((t, i) => ({
+    id: t.messages[0].id,
+    prompt: t.messages[0].parts.map((p) => (p.type === "text" ? p.text : "")).join("").trim(),
+    messages: t.messages,
+    running: !!busy && i === turns.length - 1,
+  }));
   return (
     <CardsShownContext.Provider value={cards}>
-      {rows.map((r) =>
-        r.type === "message" ? (
-          <MessageView key={r.message.id} message={r.message} detailed={detailed} />
-        ) : r.type === "compaction" ? (
-          <Compaction key={r.message.id} message={r.message} />
-        ) : (
-          <Chatter key={r.id} row={r} me={me} detailed={detailed} />
-        ),
-      )}
+      {turns.map((t, i) => {
+        return (
+          <Fragment key={all[i].id}>
+            {t.rows.map(row)}
+            <div className="pagent-turn-footer">{footer(all[i], all)}</div>
+          </Fragment>
+        );
+      })}
     </CardsShownContext.Provider>
   );
 }
 
 /** Turns between agents, as one line: who with, how many, a glimpse. Open, the turns as they were (rendered only then). */
-function Chatter({ row, me, detailed }: { row: Extract<Row, { type: "chatter" }>; me: string; detailed?: boolean }) {
+function Chatter({ row, me, detailed }: { row: Extract<Row, { type: "chatter" }>; me: AgentRef; detailed?: boolean }) {
   const [open, setOpen] = useState(false);
+  const who = chatterLabels(me, row.with);
   return (
     <details className="pagent-chatter" onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>
         <Chevron />
         <span className="pagent-chatter-who">
-          {me} ↔ {row.with.join(", ")}
+          {who.me} ↔ {who.with.join(", ")}
         </span>
         <span className="pagent-chatter-count">{tn("chat.exchanges.one", "chat.exchanges.other", row.exchanges)}</span>
         {row.glimpse && <span className="pagent-chatter-glimpse">{row.glimpse}</span>}
@@ -591,7 +625,7 @@ export function Chat({ agent: explicit, placeholder, style, chatter, cards }: { 
       <div className="pagent-chat-log">
         {loaded && messages.length === 0 && <div className="pagent-muted">{t("chat.empty")}</div>}
         <FormStatesOf agent={agent} messages={messages}>
-          <Turns messages={messages} me={agent.agent} chatter={chatter} cards={cards} />
+          <Turns messages={messages} me={agent} chatter={chatter} cards={cards} />
         </FormStatesOf>
         {status === "submitted" && <div className="pagent-muted">…</div>}
         <div ref={endRef} />

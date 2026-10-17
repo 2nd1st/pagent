@@ -51,6 +51,20 @@ function agentCommand(argv: string[]) {
   req.end(JSON.stringify({ argv, cwd: process.cwd() }));
 }
 
+/** The server running the app at `root`, as the daemon knows it (exits saying so when there is none). */
+async function runningApp(root: string): Promise<{ root: string; port: number }> {
+  const { existingDaemon } = await import("./daemon-client.ts");
+  const conn = await existingDaemon();
+  const apps = conn ? (await conn.request<{ apps: { root: string; port: number }[] }>("status")).apps : [];
+  conn?.end();
+  const app = apps.find((a) => a.root === root);
+  if (!app) {
+    console.error(`pagent: no server is running the app at ${root} (--root <app-root>)`);
+    process.exit(1);
+  }
+  return app;
+}
+
 const usage = () => {
   console.error(
     "usage: pagent serve <app-root> [--port 4870] [--host 0.0.0.0]   --host: also for other devices (with a token)\n" +
@@ -59,6 +73,7 @@ const usage = () => {
       "       pagent add                                            list the bridges\n" +
       "       pagent daemon status|stop|restart\n" +
       "       pagent stop <node>#<agent> [--root <app-root>]           stop that agent's turn in progress (as Esc in its TUI)\n" +
+      "       pagent mv <node> <new path> [--root <app-root>]          move a node with its data, state, sessions and references\n" +
       "       pagent key create <node> [--name n] [--ttl 1h] [--root …]  a key to the app's routes under <node> (shown once)\n" +
       "       pagent key list | revoke <name> [--root …]\n" +
       "An app's agents have more commands (`pagent --help` in an agent's shell).",
@@ -134,16 +149,7 @@ if (env("TOKEN")) {
   startServer({ root: resolve(arg), port, host });
 } else if (command === "stop" && arg?.includes("#")) {
   // The app's own control plane (POST /_pagent/stop), on the server the daemon knows for that app.
-  const { existingDaemon } = await import("./daemon-client.ts");
-  const root = resolve(flagValue(parse(rest), "root") ?? ".");
-  const conn = await existingDaemon();
-  const apps = conn ? (await conn.request<{ apps: { root: string; port: number }[] }>("status")).apps : [];
-  conn?.end();
-  const app = apps.find((a) => a.root === root);
-  if (!app) {
-    console.error(`pagent: no server is running the app at ${root} (--root <app-root>)`);
-    process.exit(1);
-  }
+  const app = await runningApp(resolve(flagValue(parse(rest), "root") ?? "."));
   const [node, agent] = arg.split("#");
   const res = await fetch(`http://127.0.0.1:${app.port}/_pagent/stop`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ node: node || "/", agent }) });
   const r = (await res.json().catch(() => ({}))) as { said?: string | null; error?: string };
@@ -152,6 +158,16 @@ if (env("TOKEN")) {
     process.exit(1);
   }
   console.log(r.said ? `${arg}: ${r.said}` : `${arg} is in no turn; nothing to stop`);
+} else if (command === "mv" && arg && rest[0] && !rest[0].startsWith("--")) {
+  // Moving a node is the server's (it closes the agents' terminals, knows who is in a turn): POST /_pagent/move.
+  const app = await runningApp(resolve(flagValue(parse(rest.slice(1)), "root") ?? "."));
+  const res = await fetch(`http://127.0.0.1:${app.port}/_pagent/move`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: arg, to: rest[0] }) });
+  const r = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+  if (!res.ok) {
+    console.error(`pagent mv: ${r.error ?? res.statusText}`);
+    process.exit(1);
+  }
+  console.log(r.text);
 } else if (command === "daemon" && ["status", "stop", "restart"].includes(arg)) {
   const { existingDaemon } = await import("./daemon-client.ts");
   const { daemonPaths } = await import("./daemon-protocol.ts");

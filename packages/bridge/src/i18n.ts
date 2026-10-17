@@ -174,6 +174,8 @@ const en = {
   "app.pages": "Pages",
   "app.hidePages": "Hide pages",
   "app.back": "Back",
+  "rail.working": "{n} working",
+  "rail.waiting": "{n} waiting for you",
   "app.notifyBlocked": "Notifications are blocked for this site in the browser's settings",
   "app.notifyOn": "Notifying you when an agent finishes or needs you while you are elsewhere (click to stop)",
   "app.notifyOff": "Notify me when an agent finishes or needs me while I am elsewhere",
@@ -354,6 +356,8 @@ const zhCN: Words = {
   "app.pages": "页面",
   "app.hidePages": "隐藏页面列表",
   "app.back": "返回",
+  "rail.working": "{n} 个在工作",
+  "rail.waiting": "{n} 个在等你",
   "app.notifyBlocked": "浏览器设置里屏蔽了这个网站的通知",
   "app.notifyOn": "你不在这里时，助手做完或需要你都会通知你（点一下停止）",
   "app.notifyOff": "我不在这里时，助手做完或需要我就通知我",
@@ -420,21 +424,62 @@ export function langOf(tag?: string | null): Lang {
   return (Object.keys(WORDS) as Lang[]).find((l) => l.toLowerCase() === t) ?? ALIASES[t] ?? "en";
 }
 
-let current: Lang = "en";
+// The language in effect: the reader's choice (setLanguage, remembered in this browser), else the app's (its home
+// page's metadata.lang), else, for what the app writes itself, the browser's. The engine's words follow the first two
+// (English when neither says one, or one the table has no column for); `tag` is the one the app's own words go by.
+const CHOSEN = "pagent.lang.chosen";
+const browser = typeof window !== "undefined";
+const stored = (): string | null => {
+  try {
+    return browser ? localStorage.getItem(CHOSEN) : null;
+  } catch {
+    return null;
+  }
+};
+const reader = () => (typeof navigator !== "undefined" && navigator.language) || "en";
+let app: string | null = null;
+let chosen: string | null = stored();
+let current: Lang = langOf(chosen);
+let tag = chosen ?? reader();
 const listeners = new Set<() => void>();
 const subscribe = (cb: () => void) => (listeners.add(cb), () => void listeners.delete(cb));
 
-/** For the shell: the app's language (its home page's metadata.lang), as soon as it knows it. */
-export function setLanguage(tag?: string | null) {
-  const next = langOf(tag);
-  if (next === current) return;
+function update() {
+  const next = langOf(chosen ?? app);
+  const nextTag = chosen ?? app ?? reader();
+  if (next === current && nextTag === tag) return;
   current = next;
+  tag = nextTag;
   for (const l of listeners) l();
 }
 
-/** The language the engine's words are in now; a component that calls this renders again when it changes. */
-export function useLanguage(): Lang {
-  return useSyncExternalStore(subscribe, () => current, () => current);
+/** For the shell: the app's language (its home page's metadata.lang), as soon as it knows it. */
+export function setAppLanguage(lang?: string | null) {
+  app = lang || null;
+  update();
+}
+
+/**
+ * The reader picks a language ("zh-CN", "en"): the engine's words and the app's own (useLanguage) follow it, over the
+ * app's metadata.lang, and this browser remembers it. null: back to the app's.
+ */
+export function setLanguage(lang: string | null) {
+  chosen = lang || null;
+  try {
+    if (browser) chosen ? localStorage.setItem(CHOSEN, chosen) : localStorage.removeItem(CHOSEN);
+  } catch {}
+  update();
+}
+
+/** The reader's choice (setLanguage), if they made one. */
+export const chosenLanguage = () => chosen;
+
+/**
+ * The language the app is read in now, as a tag ("zh-CN", "en-GB"): the reader's choice, else the app's metadata.lang,
+ * else the browser's. A component that calls this renders again when it changes (the engine's words do too).
+ */
+export function useLanguage(): string {
+  return useSyncExternalStore(subscribe, () => tag, () => tag);
 }
 
 const fill = (words: string, values?: Record<string, string | number>) => words.replace(/\{(\w+)\}/g, (m, k: string) => (values && k in values ? String(values[k]) : m));

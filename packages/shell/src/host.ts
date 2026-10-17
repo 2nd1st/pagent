@@ -169,6 +169,21 @@ export function createHost(NodeFrame: HostApi["NodeFrame"], McpApp: HostApi["Mcp
 
 export { qs, api };
 
+/**
+ * Whether code that changed at `code` may be the node at `path`'s: its own folder, or a dynamic page's it may be an
+ * instance of (/studio/[ws]/[id] for /studio/harness-app/fix-login; [...x] for the rest of the path).
+ */
+export function codeMayBe(code: string, path: string): boolean {
+  if (code === path) return true;
+  const c = code.split("/").filter(Boolean);
+  const p = path.split("/").filter(Boolean);
+  for (let i = 0; i < c.length; i++) {
+    if (/^\[\.\.\.\w+\]$/.test(c[i])) return i === c.length - 1 && p.length > i;
+    if (i >= p.length || (c[i] !== p[i] && !/^\[\w+\]$/.test(c[i]))) return false;
+  }
+  return c.length === p.length;
+}
+
 /** Nodes over HTTP + SSE (the shell). */
 export const httpLoader = {
   node: (path: string, from?: string) => api<any>(`/_pagent/node?${qs({ path, ...(from ? { from } : {}) })}`),
@@ -176,6 +191,6 @@ export const httpLoader = {
     import(/* @vite-ignore */ `/_pagent/module?${qs({ path, file, v: version })}`),
   onChange: (path: string, cb: () => void) =>
     onHostEvent((e) => {
-      if (e.type === "resync" || (e.type === "code" && e.path === path)) cb();
+      if (e.type === "resync" || (e.type === "code" && codeMayBe(e.path, path))) cb();
     }),
 };

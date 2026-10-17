@@ -91,14 +91,33 @@ export type Config = { shared?: boolean; app?: string; skills?: string[]; mcps?:
 export type Agents = Record<string, AgentSpec | RemoteAgentSpec>;
 
 /**
+ * A dynamic page's params (its folders [x] and [...x]): what its page and layout get as the `params` prop, and its
+ * agents function as `{ params }`.
+ *   // studio/[ws]/[id]/page.tsx
+ *   export function agents({ params }: { params: Params }): Agents { return { main: { cli: "claude", cwd: workspaces[params.ws as string] } }; }
+ *   export default function Session({ params }: { params: { ws: string; id: string } }) { … }
+ */
+export type Params = Record<string, string | string[]>;
+
+/**
  * The app acting on its own: when (cron / every "10s" / watch a data file, this node's or another's by its path,
- * "~/worker/tasks.json" / app: a bridge's app changed) + an action of the node to run. The action does the rest, and
- * wakes an agent itself when one should: tell("/node#agent", "…") from "pagent/server" (its run is unattended). To
- * test a trigger, `pagent run` its action.
+ * "~/worker/tasks.json" / app: a bridge's app changed / turn: a turn of one of its agents starts and ends) + an action
+ * of the node to run. The action does the rest, and wakes an agent itself when one should: tell("/node#agent", "…")
+ * from "pagent/server" (its run is unattended). To test a trigger, `pagent run` its action.
  *   export const triggers = { digest: { cron: "0 8 * * *", run: "digest" } } satisfies Triggers;
  *   export const triggers = { pick: { watch: "~/worker/tasks.json", run: "pick" } } satisfies Triggers;
+ *   export const triggers = { record: { turn: "main", run: "record" } } satisfies Triggers;   record(e: TurnEvent)
  */
-export type Triggers = Record<string, { cron?: string; every?: string; watch?: string; app?: true | { id?: string; label?: string; role?: string }; run: string }>;
+export type Triggers = Record<string, { cron?: string; every?: string; watch?: string; app?: true | { id?: string; label?: string; role?: string }; turn?: string | true; run: string }>;
+
+/**
+ * What a turn trigger's action gets, once as the turn starts and once as it ends (for every turn of the agent: a
+ * person's, a page's, another agent's, a trigger's; except the turns this trigger's own action led to).
+ * runId: the turn's, the same both times; agent: whose; message: what it was asked, as given (without "(from …)");
+ * from: who asked ("" a person in a conversation; else as "(from …)" says: "/node#agent", "trigger:/node#name", a
+ * page's path, a URL); reply: at the end, the final text of its reply.
+ */
+export type TurnEvent = { phase: "start" | "end"; runId: string; agent: string; message: string; from: string; reply?: string };
 
 /**
  * Tools the page itself implements with useTool: they run in the user's open page. Agents run them with

@@ -2,7 +2,8 @@
 // runner:codex — drives Codex through its app-server (JSON-RPC over a unix socket). pagent runs its own
 // app-server, one per CODEX_HOME, in the daemon; every turn goes through it, and the native TUI, when someone opens
 // it, attaches to the same thread (`codex --remote`). Threads are Codex's own; a folder is a session (its latest
-// thread), or a pinned agent remembers its thread in stateDir/session.json.
+// thread), or a pinned agent remembers its thread in stateDir/session.json: one that adopted a thread (seedSession),
+// and one that works in a folder other than its node's (ownSession: others may work there, SPEC 13.9).
 //
 // Same contract as runner:claude-code: one JSON object on the first line of stdin, JSONL on stdout.
 //   { op: "service" } → {type:"service", id, command, args, envDrop, cwd}: the app-server the daemon keeps running
@@ -18,11 +19,13 @@
 //   { op: "info", cwd, stateDir } → {type:"info", sessionId, resume}
 //   { op: "usage", cwd, stateDir, thread? } → {type:"usage", usage, file}: the thread's token use (lib/usage.ts), from its
 //     rollout; the session says the same, live, before each turn-end as a data-usage chunk
+//   { op: "move", from, cwd, stateDir } → {type:"moved", sessions}: the agent's folder moved (pagent mv); a folder agent
+//     remembers the thread it had there (moveOp)
 //   { op: "describe" } → {type:"describe", turns: "thread"}: what the core goes by (agents.ts, Capabilities)
 //     It does not say `strangers` (SPEC 13.7): Codex has no turn without tools (its shell is always there; even the
 //     read-only sandbox reads the disk), so a Codex agent answers no strangers.
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { connect as connectUnix } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -38,12 +41,14 @@ import { SubagentStream } from "./lib/subagents.ts";
 const env = (k: string) => process.env[`PAGENT_${k}`];
 
 type Input = {
-  op: "service" | "session" | "history" | "info" | "interactive" | "usage" | "describe";
+  op: "service" | "session" | "history" | "info" | "interactive" | "usage" | "describe" | "move";
+  from?: string; // move: the folder the agent worked in (real path)
   cwd: string;
   stateDir: string;
   thread?: string; // the thread the agent's session has open (history, interactive)
   addDirs?: string[];
   seedSession?: string; // adopt an existing thread the first time
+  ownSession?: boolean; // its cwd is not its node's folder: its thread is its own, never the folder's latest
   env?: Record<string, string>; // the agent's identity for the `pagent` command, and PATH with it first
   agentSocket?: string | null; // where `pagent` reaches the app: the sandbox must let commands connect to it
   permissionUrl?: string; // the app's permission endpoint: approvals become cards in the app
@@ -156,8 +161,14 @@ async function latestThread(rpc: Rpc, cwd: string): Promise<string | null> {
   return r?.data?.[0]?.id ?? null;
 }
 
-/** A pinned thread (adopted sessionId) or, by default, the folder's latest. */
-const currentThread = (rpc: Rpc, input: Input) => (input.seedSession ? Promise.resolve(loadSession(input.stateDir, input.seedSession)) : latestThread(rpc, input.cwd));
+/** The agent remembers its thread: it adopted one, or works in a folder that is not its node's. */
+const pinned = (input: Input) => !!input.seedSession || !!input.ownSession;
+
+/**
+ * A pinned thread (adopted sessionId, or its own; none yet: a new one) or, by default, the folder's latest. A folder
+ * that has none yet (it moved: moveOp) goes on with the thread its agent had before.
+ */
+const currentThread = async (rpc: Rpc, input: Input) => (pinned(input) ? loadSession(input.stateDir, input.seedSession) : ((await latestThread(rpc, input.cwd)) ?? loadSession(input.stateDir)));
 
 /**
  * The app's .git: committing node code is part of an agent's job, but the sandbox only lets it write its own
@@ -286,7 +297,7 @@ async function openThread(rpc: Rpc, input: Input): Promise<{ id: string; model: 
   const started = opened(await rpc.call("thread/start", add));
   // A new thread is written to disk with its first message; a name writes it now, so a TUI can resume it.
   await rpc.call("thread/name/set", { threadId: started.id, name: `pagent ${basename(input.cwd)}` });
-  if (input.seedSession) saveSession(input.stateDir, started.id);
+  if (pinned(input)) saveSession(input.stateDir, started.id);
   return started;
 }
 
@@ -696,6 +707,60 @@ function interactiveOp(input: Input) {
   out({ type: "command", command: codexBin(), args, cwd: real(input.cwd), trust });
 }
 
+/**
+ * The agent's folder moved (`pagent mv`). Codex keeps a thread with the folder it started in (its rollout's session
+ * meta; thread/list goes by it), and resumes one by id in any folder (the agent's cwd comes with every thread/resume).
+ * So a pinned agent (its thread in stateDir/session.json, which moved with the folder) needs nothing; one whose
+ * session was its folder's latest thread remembers that thread, and goes on with it until the new folder has a later
+ * one (currentThread). `from` is the old folder's real path. The latest by Codex's own list when its app-server is up;
+ * else by the rollouts' session meta.
+ */
+async function moveOp(input: Input) {
+  if (pinned(input)) return out({ type: "moved", sessions: 0 });
+  let id: string | null = null;
+  try {
+    const rpc = await Rpc.open(3_000);
+    id = await latestThread(rpc, input.from!);
+    rpc.close();
+  } catch {
+    id = latestRollout(input.from!);
+  }
+  if (id) saveSession(input.stateDir, id);
+  out({ type: "moved", sessions: id ? 1 : 0 });
+}
+
+/** The newest rollout under CODEX_HOME/sessions whose session meta says it started in `cwd`: its thread's id. */
+function latestRollout(cwd: string): string | null {
+  let best: { id: string; at: number } | null = null;
+  const walk = (dir: string) => {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const p = join(dir, name);
+      if (!name.endsWith(".jsonl")) {
+        if (!name.includes(".")) walk(p);
+        continue;
+      }
+      try {
+        const fd = openSync(p, "r");
+        const head = Buffer.alloc(16_384);
+        const n = readSync(fd, head, 0, head.length, 0);
+        closeSync(fd);
+        const first = JSON.parse(head.subarray(0, n).toString("utf8").split("\n")[0]);
+        const meta = first.type === "session_meta" ? first.payload : first;
+        const at = statSync(p).mtimeMs;
+        if (meta?.cwd === cwd && typeof meta.id === "string" && (!best || at > best.at)) best = { id: meta.id, at };
+      } catch {}
+    }
+  };
+  walk(join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "sessions"));
+  return (best as { id: string } | null)?.id ?? null;
+}
+
 /** The same thread from outside the app: another TUI on pagent's app-server (the thread has one writer: it). */
 async function infoOp(input: Input) {
   let sessionId: string | null = null;
@@ -730,5 +795,6 @@ else if (input.op === "usage") await usageOp(input);
 else if (input.op === "info") await infoOp(input);
 else if (input.op === "interactive") interactiveOp(input);
 else if (input.op === "service") serviceOp();
+else if (input.op === "move") await moveOp(input);
 else if (input.op === "describe") out({ type: "describe", turns: "thread" }); // every turn goes to the agent's thread
 else out({ type: "error", errorText: `unknown op ${(input as Input).op}` });

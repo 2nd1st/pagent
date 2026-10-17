@@ -138,13 +138,14 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 
 /* ---------------------------------------------------------------- navigation
    A rail with the app's pages (by title, with their agents' status), a top bar with the trail of titles. The top bar
-   is 44px and the main's vertical padding 16px, so a page that fills the window sizes itself calc(100vh - 76px). */
+   is --pagent-top-height (44px) and the main is padded; a page that fills the window says so (metadata.fill), and the
+   main gives it all of it (.pagent-main[data-fill]). */
 .pagent-app { display: flex; min-height: 100vh; }
 .pagent-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .pagent-top {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; gap: 2px;
-  height: 44px; padding: 0 10px;
+  height: var(--pagent-top-height); padding: 0 10px;
   background: var(--pagent-bg);
   border-bottom: 1px solid var(--pagent-border);
 }
@@ -195,6 +196,12 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-railsaid { color: var(--pagent-muted); }
 .pagent-railsaid[data-asks] { color: var(--pagent-text); }
 .pagent-raillabel { padding: 14px 8px 4px; font-size: 12px; font-weight: 500; color: var(--pagent-faint); }
+/* A dynamic page's instances as one entry (the sessions of a workspace): opens to list them. */
+.pagent-railgroup { display: flex; flex-direction: column; gap: 1px; }
+.pagent-railgroup > button.pagent-railitem { width: 100%; border: 0; border-radius: var(--pagent-radius-sm); background: transparent; text-align: left; font: inherit; font-weight: 400; cursor: pointer; }
+.pagent-railgroup > button.pagent-railitem:hover { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); }
+.pagent-railgroup > button.pagent-railitem[aria-current="page"] { background: color-mix(in srgb, var(--pagent-text) 8%, transparent); }
+.pagent-railgroup > button[aria-expanded="true"] .pagent-chevron { transform: rotate(90deg); }
 
 /* An agent's status, the same everywhere (rail, console, chat, fab): working breathes, waiting for the user stands out,
    said something new is filled, idle is a quiet ring. A page without agents keeps the dot's room, so titles line up. */
@@ -212,6 +219,10 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 
 .pagent-spacer { flex: 1; }
 .pagent-main { padding: 16px 24px; }
+/* metadata.fill: the page takes the window below the top bar, edge to edge; its outermost element fills it
+   (height: 100%, or flex: 1). --pagent-top-height is the top bar's, for anything else sized by the window. */
+:root { --pagent-top-height: 44px; }
+.pagent-main[data-fill] { padding: 0; height: calc(100dvh - var(--pagent-top-height)); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .pagent-muted { color: var(--pagent-muted); }
 .pagent-empty { padding: 72px 24px; text-align: center; color: var(--pagent-muted); font-size: 14px; }
 
@@ -482,6 +493,9 @@ summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
 .pagent-console-head .pagent-muted { color: var(--pagent-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pagent-console-log { flex: 1; overflow: auto; padding: 20px var(--pagent-gutter); display: flex; flex-direction: column; gap: 18px; }
 .pagent-console-input { padding: 8px var(--pagent-gutter) 16px; }
+/* What a page shows under a turn (turnFooter): its own size, close to the turn it is about. */
+.pagent-turn-footer { flex: none; min-width: 0; margin-top: -8px; }
+.pagent-turn-footer:empty { display: none; }
 .pagent-console-inline { --pagent-gutter: max(0px, calc(50cqw - var(--pagent-reading-width) / 2)); position: relative; inset: auto; z-index: auto; height: calc(100vh - 110px); background: transparent; }
 .pagent-console-inline .pagent-console-head { border-bottom: 0; padding-top: 4px; padding-bottom: 0; }
 .pagent-console-inline .pagent-console-input { padding-bottom: 0; }

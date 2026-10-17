@@ -19,6 +19,8 @@ export type NodeInfo = {
   manifest: { agents: { name: string }[]; actions: { name: string }[]; errors: string[] };
   /** What to know about an instance that does not stop it (an older pagent's folder for its key is still there). */
   notes?: string[];
+  /** An instance of a dynamic page: the values of its [segments], which its page and layout get as `params`. */
+  params?: Record<string, string | string[]>;
 };
 
 class Boundary extends Component<{ path: string; children: ReactNode }, { error: Error | null }> {
@@ -114,7 +116,7 @@ export function NodeFrame({
           <div className="pagent-muted pagent-missing">{t("frame.noFile", { file, path })}</div>
         ) : mod ? (
           <Boundary key={mod.version} path={path}>
-            <mod.Comp {...props}>{children}</mod.Comp>
+            <mod.Comp {...props} {...(info?.params ? { params: info.params } : {})}>{children}</mod.Comp>
           </Boundary>
         ) : (
           !error && <div className="pagent-muted">{t("frame.loading", { path })}</div>

@@ -21,10 +21,11 @@
 // agent declared as one of this app's, agents/remote.ts) is told as any agent of the app: its turn is that POST, from
 // its own message route here, and the reply that comes back. A message from outside to a remote agent is at its door
 // instead (atDoor): its reply, a message it starts itself (with the key we gave it), or a stranger's.
-import { chainOf, inChain, notify, postReply, startRun, unattendedFrom, type AgentRef, type AskInput, type Ctx } from "./agents.ts";
+import { chainOf, inChain, lineageOf, notify, postReply, startRun, unattendedFrom, type AgentRef, type AskInput, type Ctx } from "./agents.ts";
 import { callerName, isExternal, type Caller } from "./caller.ts";
 import type { Call } from "./calls.ts";
-import { agentArg, seconds, within } from "./commands/common.ts";
+import { agentArg, nodeArg, seconds, within } from "./commands/common.ts";
+import { isInstance, notMade } from "./tree.ts";
 import { atDoor, isRemoteDecl } from "./agents/remote.ts";
 import { declOf } from "./agents/runner.ts";
 import { answerStranger } from "./agents/stranger.ts";
@@ -42,6 +43,11 @@ export type TellOptions = {
   interject?: boolean;
   /** Wait for the reply (true: up to 100 s; a number: seconds, up to 100). Later than that, it goes where `from` says. */
   wait?: boolean | number;
+  /**
+   * The target is a new instance of a dynamic page, made now (tree.ts): an instance is never made by a message that
+   * merely names it (a typo would start a fresh agent), and `new` never reaches one that is made already.
+   */
+  new?: boolean;
 };
 
 /** What a tell did. id: the message's (an automatic reply names it as inReplyTo); reply: the answer, when waited for. */
@@ -64,6 +70,17 @@ export async function agentAbove(ctx: Ctx, from: AgentRef): Promise<AgentRef> {
   throw new Error(`there is no agent above ${keyOf(from)} (.. is the nearest agent above your node)`);
 }
 
+/**
+ * `tell --new`: the instance `to` names ("/studio/ws/fix#main"), made now, recorded as made by `by` (whom the call is
+ * for: made.ts); an error if it is no instance, or is made.
+ */
+async function makeFor(ctx: Ctx, to: string, by: Caller) {
+  const node = nodeArg(ctx, to.split("#")[0] || "/", true);
+  if (!isInstance(ctx.root, node)) throw new Error(`tell: --new makes an instance of a dynamic page ([x] folders), and ${node} is a page of its own: tell it without --new`);
+  if (!notMade(ctx.root, node)) throw new Error(`tell: ${node} is there already, so --new would not make it: tell it without --new, or give the new one another address`);
+  await ctx.nodes.make(node, callerName(by) || undefined);
+}
+
 const NO_KEY =
   "tell: this code serves a caller from outside without a key, so say what it is: { stranger: true } (a one-off answer from the agent without tools, returned as `reply`; nothing reaches its session), " +
   "or { from: <its message route, the URL replies go to> } to let it in as that sender, if this code knows it its own way (a webhook's signature, caller.ip on your LAN). The engine knows a sender only by its key (`pagent key create`).";
@@ -80,6 +97,7 @@ export async function tell(ctx: Ctx, call: Pick<Call, "caller">, to: string, mes
     if (call.caller.kind !== "agent") throw new Error(`tell: ".." is the agent above the one telling; this code runs for ${callerName(call.caller) || "a person"}`);
     to = keyOf(await agentAbove(ctx, call.caller));
   }
+  if (opts.new) await makeFor(ctx, to, call.caller);
   const target = await agentArg(ctx, to);
   let caller: Caller = call.caller;
   let replyTo: AgentRef | undefined;
@@ -117,7 +135,9 @@ export async function tell(ctx: Ctx, call: Pick<Call, "caller">, to: string, mes
   const chain = opts.wait && replyTo ? [target, ...chainOf(replyTo)] : [target];
   // Unattended as whom the code that tells runs for (call.caller; `from` may have made another agent the sender above).
   const alone = unattendedFrom(call.caller) ? { unattended: true } : {};
-  const input: AskInput = { ...target, message, caller, chain, ...(opts.interject ? { interject: true } : {}), ...alone };
+  // So do the triggers it comes from: a turn trigger does not fire for what its own action told (runs.ts).
+  const triggers = lineageOf(call.caller);
+  const input: AskInput = { ...target, message, caller, chain, ...(opts.interject ? { interject: true } : {}), ...alone, ...(triggers.length ? { triggers } : {}) };
   const late = { replyTo, replyPost };
   if (!opts.wait) {
     const run = await startRun(ctx, { ...input, ...(replyTo ? { replyTo } : {}), ...(replyPost ? { replyPost } : {}) });

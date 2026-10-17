@@ -17,14 +17,14 @@
 import type { AgentRef, Ctx } from "../agents.ts";
 import { keyOf } from "../refs.ts";
 import { folderOf, parse, quote, type Call, type Command, type Output } from "./common.ts";
-import { treeCommand, statusCommand, runOnNodeCommand } from "./nodes.ts";
+import { treeCommand, statusCommand, runOnNodeCommand, mvCommand, rmCommand } from "./nodes.ts";
 import { agentsCommand, tellCommand, stopCommand, askUserCommand } from "./agents.ts";
 import { screenReadCommand, screenActCommand, screenOpenCommand } from "./screen.ts";
 import { bridgesCommand, addCommand, packageAddCommand, appCommands } from "./install.ts";
 import { keyCreateCommand, keyListCommand, keyRevokeCommand } from "./keys.ts";
 
 /** Every command, in the order `pagent --help` lists them. */
-const commands: Command[] = [treeCommand, statusCommand, agentsCommand, runOnNodeCommand, tellCommand, stopCommand, askUserCommand, keyCreateCommand, keyListCommand, keyRevokeCommand, screenReadCommand, screenActCommand, screenOpenCommand, bridgesCommand, addCommand, packageAddCommand, ...appCommands];
+const commands: Command[] = [treeCommand, statusCommand, agentsCommand, runOnNodeCommand, mvCommand, rmCommand, tellCommand, stopCommand, askUserCommand, keyCreateCommand, keyListCommand, keyRevokeCommand, screenReadCommand, screenActCommand, screenOpenCommand, bridgesCommand, addCommand, packageAddCommand, ...appCommands];
 
 // ---------------------------------------------------------------- help and dispatch
 

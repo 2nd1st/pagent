@@ -9,6 +9,7 @@ import type { AgentDecl } from "../extract.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { harnessEnv, outerSessionsFrom, type OuterSession } from "../shell-env.ts";
 import { terminalOf } from "../terminal.ts";
+import { codeOf } from "../tree.ts";
 import { agentAccess } from "./identity.ts";
 import { systemPrompt } from "./prompt.ts";
 import type { Ctx } from "./types.ts";
@@ -129,6 +130,12 @@ export async function agentDecl(ctx: Ctx, ref: AgentRef): Promise<AgentDecl> {
 /** A node's folder, without the trailing slash join() leaves on "/" (harnesses key sessions by the exact path). */
 export const nodeFolder = (ctx: Ctx, ref: AgentRef) => resolve(ctx.root, `.${ref.node}`);
 
+/** The folder of an instance's code (its dynamic page's, tree.ts), or undefined for a node whose code is its own. */
+export function codeFolder(ctx: Ctx, ref: AgentRef): string | undefined {
+  const c = codeOf(ctx.root, ref.node);
+  return c && c.code !== c.path ? resolve(ctx.root, `.${c.code}`) : undefined;
+}
+
 /** Where an agent's harness runs: its node's folder, or (for an adopted session) the folder that session lives in. */
 function agentCwd(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown>): string {
   return typeof decl.cwd === "string" ? decl.cwd : nodeFolder(ctx, ref);
@@ -137,6 +144,11 @@ function agentCwd(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown>): strin
 /**
  * Runner input shared by every op: identity, folders, an existing session to adopt, and the agent's TUI while it runs
  * (its pid: the session that TUI is on is the agent's, wherever it moved, e.g. after a /clear).
+ *
+ * The session belongs to the agent (SPEC 13.9). Only an agent that works in its node's own folder takes that folder's
+ * latest session (the folder is the session: `claude --continue` there is the same conversation). One that works
+ * elsewhere (a cwd: a project folder that the instances of a dynamic page, or other agents, share) keeps its own
+ * (ownSession): a fresh one the first time, remembered in its state (stateDir/session.json), resumed after that.
  */
 export function runnerBase(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown>) {
   const dir = nodeFolder(ctx, ref);
@@ -145,8 +157,9 @@ export function runnerBase(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown
   return {
     cwd,
     stateDir: join(dir, ".state", ref.agent),
-    addDirs: cwd === dir ? [] : [dir], // an adopted session still reaches its node's own folder
+    addDirs: cwd === dir ? [] : [dir], // an agent working elsewhere still reaches its node's own folder
     seedSession: typeof decl.session === "string" ? decl.session : undefined,
+    ...(resolve(cwd) !== dir ? { ownSession: true } : {}),
     ...(tui ? { tui } : {}),
   };
 }
@@ -162,7 +175,7 @@ export async function agentInput(ctx: Ctx, ref: AgentRef, decl: AgentDecl) {
     appRoot: ctx.root,
     pluginDirs: [engine.skill],
     ...(await ownConfig(ctx, ref, decl)),
-    systemPrompt: systemPrompt(ref, nodeFolder(ctx, ref), decl),
+    systemPrompt: systemPrompt(ref, { dir: nodeFolder(ctx, ref), code: codeFolder(ctx, ref), cwd: agentCwd(ctx, ref, decl), root: ctx.root }, decl),
     options: decl,
   };
 }
@@ -184,11 +197,11 @@ async function ownConfig(ctx: Ctx, ref: AgentRef, decl: AgentDecl): Promise<{ sk
     if (found.skills === undefined && from.skills !== undefined) found.skills = { value: from.skills, dir };
     if (found.mcps === undefined && from.mcps !== undefined) found.mcps = { value: from.mcps, dir };
   };
-  look(decl, nodeFolder(ctx, ref));
+  look(decl, codeFolder(ctx, ref) ?? nodeFolder(ctx, ref)); // "./x": beside the code that declares it
   for (let path = ref.node; ; path = path.replace(/\/[^/]*$/, "") || "/") {
     if (found.skills && found.mcps) break;
     const config = (await ctx.nodes.declarations(path).catch(() => null))?.manifest.config;
-    look(config, nodeFolder(ctx, { node: path, agent: "" }));
+    look(config, codeFolder(ctx, { node: path, agent: "" }) ?? nodeFolder(ctx, { node: path, agent: "" }));
     if (path === "/") break;
   }
   const out: { skills?: string[]; mcps?: Record<string, unknown> } = {};

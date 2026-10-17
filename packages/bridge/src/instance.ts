@@ -8,6 +8,14 @@
  * The server checks keys by the same rule (core tree.ts instanceDir): each package is built on its own, so each
  * writes it down; a test checks they agree.
  */
+/** The key a folder's name was made from (instanceDir backwards: +4fee → 修), or the name as it is when none was. */
+export function keyOfFolder(name: string): string {
+  if (name === "+") return "";
+  if (!/^(?:[A-Za-z0-9_-]|\+[0-9a-f]{4})+$/.test(name)) return name;
+  const key = name.replace(/\+([0-9a-f]{4})/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  return instanceDir(key) === name ? key : name;
+}
+
 export function instanceDir(key: unknown): string {
   const k = String(key);
   let out = "";

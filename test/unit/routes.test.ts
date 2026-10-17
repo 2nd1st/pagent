@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { analyze } from "../../packages/core/src/extract.ts";
 import { routeExports } from "../../packages/core/src/extract/routes.ts";
 import { matchRoute } from "../../packages/core/src/routes.ts";
+import { codeOf, listNodes, resolveRoute } from "../../packages/core/src/tree.ts";
 
 test("a route's methods: typed (with its schema and doc), raw (a Request, or untyped as in Next), none; the inbox", () => {
   const { handlers, errors } = routeExports(
@@ -64,4 +65,35 @@ test("a path finds its route: static over [x] over [...x]; params", () => {
 
 test("webhook triggers are gone: a route says the same", () => {
   assert.match(analyze(`export const triggers = { deploy: { webhook: true, ask: "x" } };`).errors.join(), /webhook triggers are gone/);
+});
+
+test("pages: a static folder wins over [x], which wins over [...x]; an instance's folder is its address, its value as an instance key", () => {
+  const root = mkdtempSync(join(tmpdir(), "pagent-dyn-"));
+  const page = (p: string, f = "page") => (mkdirSync(join(root, p), { recursive: true }), writeFileSync(join(root, p, `${f}.tsx`), ""));
+  try {
+    page("studio", "layout");
+    page("studio/[ws]", "layout");
+    page("studio/[ws]/[id]");
+    page("studio/[ws]/settings");
+    page("docs/[...rest]");
+    mkdirSync(join(root, "studio/harness-app/fix-login"), { recursive: true }); // an instance's folder: its data, no code
+    const at = (p: string) => {
+      const c = codeOf(root, p);
+      return c && [c.path, c.code, JSON.stringify(c.params)];
+    };
+    assert.deepEqual(at("/studio/harness-app/fix-login"), ["/studio/harness-app/fix-login", "/studio/[ws]/[id]", '{"ws":"harness-app","id":"fix-login"}']);
+    assert.deepEqual(at("/studio/x/settings"), ["/studio/x/settings", "/studio/[ws]/settings", '{"ws":"x"}']);
+    assert.deepEqual(at("/studio/x/修"), ["/studio/x/+4fee", "/studio/[ws]/[id]", '{"ws":"x","id":"修"}']);
+    assert.deepEqual(at("/studio/x/+4fee"), ["/studio/x/+4fee", "/studio/[ws]/[id]", '{"ws":"x","id":"修"}']);
+    assert.deepEqual(at("/docs/a/b"), ["/docs/a/b", "/docs/[...rest]", '{"rest":["a","b"]}']);
+    assert.equal(at("/docs"), null); // [...x] takes a segment at least
+    assert.equal(at("/studio/[ws]/[id]"), null); // the code is no address
+    assert.equal(at("/studio/x/_private"), null);
+    assert.deepEqual(resolveRoute(root, "/studio/x/y"), [{ path: "/studio", file: "layout" }, { path: "/studio/x", file: "layout" }, { path: "/studio/x/y", file: "page" }]);
+    assert.deepEqual(listNodes(root).sort(), ["/studio", "/studio/harness-app", "/studio/harness-app/fix-login"]); // the instances made, never [x]
+    page("studio/harness-app/fix-login"); // a page.tsx of its own: a static node now
+    assert.deepEqual(at("/studio/harness-app/fix-login"), ["/studio/harness-app/fix-login", "/studio/harness-app/fix-login", "{}"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

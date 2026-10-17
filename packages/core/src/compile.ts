@@ -8,7 +8,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { analyze, applyEdits, INSTALL_SOURCE, installSourceError, isServerFile, NODE_SOURCE, serverExports, serverStub } from "./extract.ts";
-import { hasFile, isNode, nodeDir, normPath, type NodeFile } from "./tree.ts";
+import { codeDir, hasFile, isNode, nodeDir, normPath, notMade, type NodeFile } from "./tree.ts";
 import type { Deps } from "./deps.ts";
 
 const HOST_MODULES = /^(react|react-dom|react-dom\/client|react\/jsx-runtime|react\/jsx-dev-runtime|pagent)$/;
@@ -45,7 +45,7 @@ export function importedNode(root: string, source: string): { path: string; dir:
   } catch {
     return null;
   }
-  const dir = nodeDir(root, path);
+  const dir = codeDir(root, path);
   const files = (["layout", "page"] as NodeFile[]).filter((f) => hasFile(dir, f));
   if (!files.length) return null;
   const parts = files.map((f) => analyze(readFileSync(join(dir, `${f}.tsx`), "utf8")));
@@ -74,12 +74,13 @@ export function serverModule(root: string, source: string): { node: string; file
   } catch {
     return null;
   }
-  if (path === "/" || isNode(root, path)) return null;
+  // An address a dynamic page would match but that is no instance made (/actions beside a root [ws] folder) is no node.
+  if (path === "/" || (isNode(root, path) && !notMade(root, path))) return null;
   const node = path.slice(0, path.lastIndexOf("/")) || "/";
   const base = path.slice(path.lastIndexOf("/") + 1).replace(/\.(ts|js)$/, "");
   if (!isNode(root, node)) return null;
   for (const ext of [".ts", ".js"]) {
-    const file = join(nodeDir(root, node), base + ext);
+    const file = join(codeDir(root, node), base + ext);
     if (!existsSync(file)) continue;
     const code = readFileSync(file, "utf8");
     return isServerFile(code) ? { node, file, names: serverExports(code, file).names } : null;
@@ -100,7 +101,7 @@ export function notServerModule(root: string, source: string): string {
   }
   const at = (ext: string) => join(root, path.slice(1) + ext);
   const isFile = (f: string) => existsSync(f) && statSync(f).isFile();
-  if (isNode(root, path)) {
+  if (isNode(root, path) && !notMade(root, path)) {
     // A node with the name of a "use server" file beside it (/tasks and tasks.ts): the address is the node's.
     const ext = [".ts", ".js"].find((e) => isFile(at(e)) && isServerFile(readFileSync(at(e), "utf8")));
     if (ext) return `"${source}" is the node ${path}; the "use server" file beside it is "${source}${ext}"`;
@@ -144,7 +145,8 @@ function nodePlugin(root: string, node: string, deps?: Deps): Plugin {
   // contains the file most closely). A file's "use server" stubs call its own node's actions.
   // Real paths, as esbuild reports them (the app root may be reached through a symlink).
   const real = (dir: string) => realpathSync(dir).replace(/\/$/, "");
-  const owners = new Map<string, string>([[real(nodeDir(root, node)), node]]); // folder → node path
+  // An instance of a dynamic page: its code is in that page's folder, and it is the node that code runs as.
+  const owners = new Map<string, string>([[real(codeDir(root, node)), node]]); // folder → node path
   const ownerOf = (file: string) => {
     let best: [string, string] | null = null;
     for (const [dir, path] of owners) {
@@ -228,7 +230,7 @@ function nodePlugin(root: string, node: string, deps?: Deps): Plugin {
         // functions are the node's actions: a .ts or .js file directly in its folder (one in a subfolder is not).
         if (isServerFile(code)) {
           const home = nodeOfFile(root, a.path);
-          if (!home || home !== owner) return { errors: [{ text: foreignServerFile(root, a.path, home) }] };
+          if (!home || !owner || real(nodeDir(root, home)) !== real(codeDir(root, owner))) return { errors: [{ text: foreignServerFile(root, a.path, home) }] };
           if (!/\.(ts|js)$/.test(a.path) || dirname(realpathSync(a.path)) !== realpathSync(nodeDir(root, home))) return { errors: [{ text: notInNodeFolder(root, a.path) }] };
           return { contents: serverStub(owner, serverExports(code, a.path).names, node), loader: "js" };
         }
@@ -269,7 +271,7 @@ export type Compiled = { code: string; hash: string; errors: string[]; inputs?: 
 export async function compileFile(root: string, node: string, file: string, deps?: Deps): Promise<Compiled> {
   try {
     const out = await build({
-      entryPoints: [join(nodeDir(root, node), `${file}.tsx`)],
+      entryPoints: [join(codeDir(root, node), `${file}.tsx`)],
       bundle: true,
       write: false,
       format: "esm",

@@ -1,7 +1,7 @@
 // Declarations read from a node's code without running it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { analyze, cronFields, everyMs, mergeManifest, serverExports, watchOf } from "../../packages/core/src/extract.ts";
+import { analyze, applyEdits, cronFields, everyMs, mergeManifest, serverExports, watchOf } from "../../packages/core/src/extract.ts";
 
 const page = `
 import { useData, type Agents } from "pagent";
@@ -85,6 +85,19 @@ test("declarations must be literals; bad triggers and reserved tool names say wh
   assert.match(analyze(`export const tools = { node_x: "y" };`).errors.join(), /reserved/);
 });
 
+test("a turn trigger: an agent of the node (or true), a when of its own", () => {
+  const record = { ...analyze(""), actions: [{ name: "record", file: "actions.ts" }] };
+  const main = { ...analyze(""), agents: [{ name: "main", runner: "claude-code" }] };
+  assert.deepEqual(analyze(`export const triggers = { r: { turn: "main", run: "record" }, any: { turn: true, run: "record" } };`).triggers, [
+    { name: "r", turn: "main", run: "record" },
+    { name: "any", turn: true, run: "record" },
+  ]);
+  assert.deepEqual(mergeManifest([analyze(`export const triggers = { r: { turn: "main", run: "record" } };`), record, main]).errors, []);
+  assert.match(mergeManifest([analyze(`export const triggers = { r: { turn: "sam", run: "record" } };`), record, main]).errors.join(), /"sam", which is not an agent of this node \(main\)/);
+  assert.match(analyze(`export const triggers = { r: { turn: "main", every: "1m", run: "record" } };`).errors.join(), /turn is a when of its own/);
+  assert.match(analyze(`export const triggers = { r: { turn: "/x#y", run: "record" } };`).errors.join(), /turn is the name of one of this node's agents/);
+});
+
 test("a bridge's app: a trigger on its changes (the window, or one element), and quit after the turn", () => {
   const read = { ...analyze(""), actions: [{ name: "read", file: "actions.ts" }] }; // its "use server" file's
   const bridge = (body: string) => mergeManifest([analyze(`export const config = { shared: true, app: "Calculator" ${body.startsWith(",") ? body : ""} };\n${body.startsWith(",") ? "" : body}`), read]);
@@ -162,4 +175,31 @@ test('"use server": an argument with a default value keeps its type', () => {
   assert.deepEqual(r.about.list, { input: "{ q?: string }", schema: { type: "object", properties: { q: { type: "string" } } }, optional: true });
   assert.deepEqual(r.about.top.schema, { type: "object", properties: { n: { type: "number" } }, required: ["n"] });
   assert.equal(r.about.top.optional, true);
+});
+
+test("agents as a function of the params: run on the server with what it uses of its file; the page gets neither", () => {
+  const lines = [
+    `import { useState } from "react";`,
+    `import { workspaces } from "../../workspaces";`,
+    `import { label } from "./label";`,
+    `import type { Agents, Params } from "pagent";`,
+    `const pick = (ws: string) => workspaces[ws];`,
+    `const Card = () => <b>{label}</b>;`,
+    `export function agents({ params }: { params: Params }): Agents | null {`,
+    `  const cwd = pick(params.ws as string);`,
+    `  return cwd ? { main: { cli: "claude", cwd } } : null;`,
+    `}`,
+    `export default function Page() { const [n] = useState(0); return <Card />; }`,
+  ];
+  const code = lines.join("\n");
+  const r = analyze(code, "page.tsx");
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.agents, []); // known only once it runs, for an instance
+  assert.equal(r.agentsFn, [lines[1], lines[3], lines[4], lines.slice(6, 10).join("\n")].join("\n"));
+  const client = applyEdits(code, r.edits);
+  assert.doesNotMatch(client, /workspaces|params\.ws/);
+  assert.match(client, /const agents = undefined;/);
+  assert.match(client, /import \{ label \} from "\.\/label";/); // the page uses it too
+  // An arrow function too.
+  assert.equal(typeof analyze(`export const agents = ({ params }) => ({ a: { cli: "codex" } });\nexport default function P() { return null; }`).agentsFn, "string");
 });

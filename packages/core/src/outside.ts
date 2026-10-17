@@ -93,6 +93,23 @@ export function expectReply(root: string, id: string, door: string, to: string) 
   }
 }
 
+/** A node moved (`pagent mv`): a reply expected at its message route (or one under it) is let in at the new one. */
+export function moveDoors(root: string, rename: (path: string) => string) {
+  let names: string[];
+  try {
+    names = readdirSync(outDir(root)).filter((f) => f.endsWith(".json"));
+  } catch {
+    return;
+  }
+  for (const f of names) {
+    try {
+      const o = JSON.parse(readFileSync(join(outDir(root), f), "utf8")) as { door?: string };
+      const door = typeof o.door === "string" ? rename(o.door) : o.door;
+      if (door !== o.door) writeFileSync(join(outDir(root), f), JSON.stringify({ ...o, door }));
+    } catch {}
+  }
+}
+
 /** No reply is expected for it any more (it came in the answer, or the message never went). */
 export const dropReply = (root: string, id: string) => rmSync(outFile(root, id), { force: true });
 

@@ -20,7 +20,7 @@
 // Its status: offline (as a session that died) when the other app does not answer, or answers that its agent takes no
 // messages; known from every message sent, and looked at again when a view asks and the last look is old.
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -94,6 +94,13 @@ function keyFor(ctx: Ctx, ref: AgentRef, decl: RemoteDecl): string | undefined {
 const dir = (ctx: Ctx) => join(daemonPaths().home, "state", appId(ctx.root), "remote");
 const conversation = (ctx: Ctx, ref: AgentRef) => join(dir(ctx), `${encodeURIComponent(keyOf(ref))}.jsonl`);
 const pendingDir = (ctx: Ctx) => join(dir(ctx), "pending");
+
+/** Its node moved (`pagent mv`): the conversation with it is the agent's at its new address. */
+export function moveConversation(ctx: Ctx, from: AgentRef, to: AgentRef) {
+  try {
+    renameSync(conversation(ctx, from), conversation(ctx, to));
+  } catch {} // none yet
+}
 
 /** A message of the conversation, as kept: when, and the message as views show it. */
 type Line = { at: string; message: UIMessage };
