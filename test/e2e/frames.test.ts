@@ -1,9 +1,11 @@
 // What an app with a frame of its own gets from the engine (SPEC 13.10), in a real browser: the console's turn footer
 // and composer completions (and text put into it from elsewhere on the page); a layout that knows the page under it
 // (useParams, usePathname) and moves between pages in code (navigate); a page that fills the window (metadata.fill);
-// the reader's language over the app's (setLanguage, useLanguage); and the rail, which shows a dynamic page's
-// instances as one entry that opens to list them.
+// the reader's language over the app's (setLanguage, useLanguage); and the rail as the app's one way through its pages
+// (SPEC 13.12): each instance a row of its own, a helper under its maker, "+" for a new one, "⋯" to rename or delete.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { chromium, type Browser } from "playwright";
 import { fakeRunner, testApp, until, type TestApp } from "../lib/app.ts";
@@ -37,7 +39,7 @@ export default function Frame({ params, children }) {
   );
 }
 `,
-      "s/[ws]/page.tsx": `export default function W() { return <p>no session</p>; }\n`,
+      "s/[ws]/page.tsx": `export function agents({ params }) { return params.ws === "nope" ? null : {}; }\nexport default function W() { return <p>no session</p>; }\n`,
       "s/[ws]/[id]/page.tsx": `import { AgentConsole, useComposer } from "pagent";
 export const metadata = { title: "Session" };
 export const agents = { main: { runner: ${runner} } };
@@ -113,18 +115,69 @@ export default function S({ params }) {
     await p.close();
   });
 
-  test("the rail: a dynamic page's instances are one entry (where you are, on one of them), a click away from the list", async () => {
+  test("the rail: every instance a row of its own, a helper under the session that made it", async () => {
     const p = await browser.newPage({ viewport: { width: 1100, height: 760 } });
-    await p.goto(`${app.url}/s/demo/c`); // a third session
-    const group = p.locator(".pagent-railgroup > button");
-    await until(async () => /Session\s*3/.test(await group.innerText()), "the third session in the rail"); // made by opening it
-    // Closed, marked as where you are: the page's own list of them is on screen, the rail does not repeat it.
-    assert.equal(await group.getAttribute("aria-expanded"), "false");
-    assert.equal(await group.getAttribute("aria-current"), "page");
-    assert.equal(await p.locator(".pagent-railgroup a.pagent-railitem").count(), 0);
-    await group.click();
-    assert.deepEqual(await p.locator(".pagent-railgroup a.pagent-railitem .pagent-railtitle").allTextContents(), ["a", "b", "c"]);
-    assert.equal(await p.locator(".pagent-railgroup a[aria-current=page]").innerText().then((s) => s.trim()), "c");
+    await p.goto(`${app.url}/s/demo/c`); // a third session, made by opening it
+    const titles = () => p.locator(".pagent-raillist .pagent-railtitle").allTextContents();
+    await until(async () => (await titles()).join() === "demo,a,b,c", "each session a row, under its workspace");
+    assert.equal(await p.locator(".pagent-railitem[aria-current=page]").getAttribute("href"), "/s/demo/c");
+    assert.equal(await p.locator('.pagent-railitem[href^="/s/demo/"] .pagent-navdot[data-state=idle]').count(), 3); // each its own state
+    // a's agent starts a helper (`tell --new`): it is under a, not beside it.
+    await app.post("/_pagent/ask", { node: "/s/demo/a", agent: "main", message: '!sh pagent tell --new /s/demo/helper "!say helped" --wait' });
+    await until(async () => (await titles()).join() === "demo,a,helper,b,c", "the helper under a");
+    const left = (href: string) => p.locator(`.pagent-railitem[href="${href}"]`).evaluate((e) => parseFloat(getComputedStyle(e).paddingLeft));
+    assert.ok((await left("/s/demo/helper")) > (await left("/s/demo/a")));
+    await p.close();
+  });
+
+  test("the rail: + makes a page under a row (or says why not), ⋯ renames and deletes an instance", async () => {
+    const p = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+    await p.goto(`${app.url}/s/demo/a`);
+    const row = (href: string) => p.locator(".pagent-railhead", { has: p.locator(`a.pagent-railitem[href="${href}"]`) });
+    const name = p.locator(".pagent-railname input");
+    // "+" on the workspace: a new session's name, made up until one is typed; Enter goes there, which makes it.
+    await row("/s/demo").hover();
+    await row("/s/demo").getByRole("button", { name: "New Session" }).click();
+    assert.match(await name.inputValue(), /^[a-z]+-[a-z]+-[a-z0-9]{2}$/);
+    await name.fill("Lisbon notes");
+    await name.press("Enter");
+    await p.waitForURL(`${app.url}/s/demo/lisbon-notes`);
+    await p.locator('.pagent-railitem[aria-current=page][href="/s/demo/lisbon-notes"]').waitFor();
+    assert.ok(existsSync(join(app.root, "s/demo/lisbon-notes")));
+    // A name taken already, and one the page refuses: said under the name, nothing made.
+    await row("/s/demo").hover();
+    await row("/s/demo").getByRole("button", { name: "New Session" }).click();
+    await name.fill("a");
+    await name.press("Enter");
+    await p.locator(".pagent-railerror", { hasText: "\"a\" is here already" }).waitFor();
+    await name.press("Escape");
+    const label = p.locator(".pagent-railhead", { has: p.locator(".pagent-raillabel", { hasText: "s" }) });
+    await label.hover();
+    await label.getByRole("button", { name: "New page here" }).click();
+    await name.fill("nope");
+    await name.press("Enter");
+    await p.locator(".pagent-railerror", { hasText: "returned null" }).waitFor();
+    assert.ok(!existsSync(join(app.root, "s/nope")));
+    await name.press("Escape");
+    // Rename the page on screen: it moves, and the page follows it (an id in any script).
+    await row("/s/demo/lisbon-notes").hover();
+    await row("/s/demo/lisbon-notes").getByRole("button", { name: "More" }).click();
+    await p.getByRole("menuitem", { name: "Rename" }).click();
+    assert.equal(await name.inputValue(), "lisbon-notes");
+    await name.fill("修登录");
+    await name.press("Enter");
+    await p.waitForURL(`${app.url}/s/demo/${encodeURIComponent("修登录")}`);
+    await p.locator('.pagent-railitem[aria-current=page][href="/s/demo/修登录"]').waitFor();
+    assert.ok(existsSync(join(app.root, "s/demo/+4fee+767b+5f55")) && !existsSync(join(app.root, "s/demo/lisbon-notes")));
+    assert.equal(await p.locator(".pagent-crumbs [aria-current=page]").innerText(), "修登录");
+    // Delete it, once confirmed: off to the page above.
+    p.once("dialog", (d) => void d.accept());
+    await row("/s/demo/修登录").hover();
+    await row("/s/demo/修登录").getByRole("button", { name: "More" }).click();
+    await p.getByRole("menuitem", { name: "Delete" }).click();
+    await p.waitForURL(`${app.url}/s/demo`);
+    await until(async () => !(await p.locator('.pagent-railitem[href="/s/demo/修登录"]').count()), "its row gone");
+    assert.ok(!existsSync(join(app.root, "s/demo/+4fee+767b+5f55")));
     await p.close();
   });
 });

@@ -8,7 +8,7 @@ import type { AgentEvent, AgentRef, AgentStatus, DataRead, DataWrite, HostApi } 
  */
 export type HostEvent =
   | { type: "resync" }
-  | { type: "code"; path: string }
+  | { type: "code"; path: string; nodes?: string[] }
   | { type: "deps"; id: string }
   | { type: "data"; path: string; file: string }
   | { type: "agent"; node: string; agent: string; event: AgentEvent }
@@ -186,11 +186,13 @@ export function codeMayBe(code: string, path: string): boolean {
 
 /** Nodes over HTTP + SSE (the shell). */
 export const httpLoader = {
-  node: (path: string, from?: string) => api<any>(`/_pagent/node?${qs({ path, ...(from ? { from } : {}) })}`),
+  node: (path: string, from?: string, again?: boolean) => api<any>(`/_pagent/node?${qs({ path, ...(from ? { from } : {}), ...(again ? { again: "1" } : {}) })}`),
   module: (path: string, file: string, version: string) =>
     import(/* @vite-ignore */ `/_pagent/module?${qs({ path, file, v: version })}`),
-  onChange: (path: string, cb: () => void) =>
+  // sources: an instance's (a fork's node, SPEC 13.11): a change to that code is a change to it. nodes: the ones whose
+  // compiled page or layout was made from the changed file, wherever it is (a root _ui/ their layout imports).
+  onChange: (path: string, cb: () => void, sources: string[] = []) =>
     onHostEvent((e) => {
-      if (e.type === "resync" || (e.type === "code" && codeMayBe(e.path, path))) cb();
+      if (e.type === "resync" || (e.type === "code" && ([path, ...sources].some((p) => codeMayBe(e.path, p)) || e.nodes?.includes(path)))) cb();
     }),
 };

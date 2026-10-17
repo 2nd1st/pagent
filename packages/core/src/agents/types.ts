@@ -42,7 +42,10 @@ export type Run = {
    * result coming back), as node#name: a turn trigger never fires for a turn its own action led to (triggers.ts).
    */
   triggers: string[];
+  /** Its message as the app has it: user.id is the turn's one id (a turn trigger's messageId, ChatTurn.id; ids.ts). */
   user: UIMessage;
+  /** The transcript's own id for its message, when its runner said it (ids.ts maps it to user.id). */
+  historyId?: string;
   /** When it started (ms): how long the agent has been at it, for status views. */
   startedAt?: number;
   chunks: UIMessageChunk[];

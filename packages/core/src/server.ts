@@ -27,9 +27,10 @@ import { matchRoute, serveRemoteDoor, serveRoute } from "./routes.ts";
 import { presence, screenResult } from "./screen.ts";
 import { broadcast, onEvent, sse, watchTree } from "./events.ts";
 import { ensureFork } from "./fork.ts";
+import { dynamicPages } from "./dynamic.ts";
 import { clientInfo, Nodes } from "./nodes.ts";
-import { canonical, codeDir, codeOf, hasFile, instancePathError, instancesOf, isNode, normPath, resolveRoute, type NodeFile } from "./tree.ts";
-import { madeOf, shownPath } from "./made.ts";
+import { canonical, codeOf, hasCode, instancePathError, instancesOf, isNode, nodeDir, normPath, notMade, resolveRoute, settleRecord, type NodeFile } from "./tree.ts";
+import { madeOf, migrateRecords, shownPath } from "./made.ts";
 import { moveNode, removeInstance } from "./moves.ts";
 import { movedText } from "./commands/nodes.ts";
 import { COOKIE, isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
@@ -158,6 +159,8 @@ export function startServer(opts: ServerOptions) {
   const host = opts.host ?? "127.0.0.1";
   const remote = isLoopbackHost(host) ? null : remoteAccess(root, localName);
   remoteOpen = !!remote;
+  // Instances as an older pagent recorded them (or did not) are recorded as this one does (made.ts, SPEC 13.11).
+  migrateRecords(root);
   const nodes = new Nodes(root);
   // Without a daemon (it did not start), agents' tokens hold for this server's life.
   const ctx: Ctx = { root, nodes, baseUrl: `http://127.0.0.1:${port}`, secret: randomBytes(32).toString("hex") };
@@ -165,8 +168,13 @@ export function startServer(opts: ServerOptions) {
   // Where other machines reach this app (replies to its agents' messages go there): its LAN address when it listens
   // beyond loopback.
   nodes.self = remote ? `http://${host === "0.0.0.0" || host === "::" ? (localAddresses()[0] ?? "127.0.0.1") : host}:${port}` : ctx.baseUrl;
-  watchTree(root);
-  onEvent((e) => e.type === "code" && nodes.changed()); // what was read or compiled is read again
+  watchTree(root, (file) => nodes.usersOf(file));
+  onEvent((e) => {
+    if (e.type !== "code") return;
+    nodes.changed(); // what was read or compiled is read again
+    // An instance's folder that gained (or lost) a page or layout of its own: its record goes with that code (tree.ts).
+    settleRecord(nodeDir(root, e.path));
+  });
   // npm packages: pre-bundle what the pages import now, and again when package.json or a lockfile changes. Open
   // pages hear of each new build (the shell reloads if it runs modules of an older one).
   void nodes.deps.start((id) => broadcast({ type: "deps", id }));
@@ -267,13 +275,15 @@ export function startServer(opts: ServerOptions) {
           return json(res, 200, { chain, params: codeOf(root, page)?.params ?? {}, fill });
         }
 
-        // The app's pages with their titles and agents: the shell's navigation.
+        // The app's pages with their titles and agents, and where a new page can be made (a dynamic page's instance):
+        // the shell's navigation.
         case "GET /_pagent/pages":
-          return json(res, 200, { pages: await nodes.pages() });
+          return json(res, 200, { pages: await nodes.pages(), dynamic: dynamicPages(root) });
 
         // from: an instance (<node>/.mounts/<its key's folder>) of that node, made when it is not there yet; notes: what
         // its frame shows besides it (fork.ts). An instance of a dynamic page is made when it is opened, unless its agents
-        // function refuses its params (Nodes.make: the 404 says why).
+        // function refuses its params (Nodes.make: the 404 says why); again=1, a page on screen looking again after a
+        // change, is no opening: one moved or removed meanwhile is not made again.
         case "GET /_pagent/node": {
           let path = normPath(q("path"));
           let notes: string[] = [];
@@ -286,8 +296,8 @@ export function startServer(opts: ServerOptions) {
             // Only a page is made by opening it: a layout above it (/studio/<ws> of studio/[ws]/layout.tsx) is its folder's
             // parent, made with it, or nothing when the page refuses its params.
             path = canonical(root, path);
-            const page = hasFile(codeDir(root, path), "page");
-            const no = page ? await nodes.make(path).then(() => null, (e: Error) => e.message) : null;
+            const page = hasCode(root, path, "page");
+            const no = !page ? null : q("again") && notMade(root, path) ? "it is not there any more (moved or removed)" : await nodes.make(path).then(() => null, (e: Error) => e.message);
             if (no) return json(res, 404, { error: `no node at ${path}: ${no}` });
           }
           return json(res, 200, { ...clientInfo(await nodes.info(path)), ...(notes.length ? { notes } : {}) });

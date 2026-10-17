@@ -11,7 +11,6 @@ import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Plugin } from "esbuild";
 import { bundle, runServerCode } from "./actions.ts";
-import { nodeOfFile } from "./compile.ts";
 import { agentsFrom, type AgentDecl } from "./extract.ts";
 import type { Params } from "./tree.ts";
 
@@ -61,7 +60,7 @@ export async function agentsOf(root: string, file: string, module: string, param
   const label = `${file.slice(root.length)}: agents({ params })`;
   let script: string;
   try {
-    script = await bundle(root, file, entry, nodeOfFile(root, file), plugins);
+    script = await bundle(root, file, entry, path, plugins);
   } catch (e) {
     const errors = (e as { errors?: { text: string }[] }).errors?.map((x) => x.text).join("\n");
     return { agents: [], errors: [`${label} does not compile: ${errors ?? (e as Error).message}`] };
@@ -73,7 +72,7 @@ export async function agentsOf(root: string, file: string, module: string, param
   const key = `${script}\n${env}\n${path}\n${JSON.stringify(params)}`;
   const known = kept.get(key);
   if (known) return known;
-  const { r, logs } = await runServerCode(root, file, entry, nodeOfFile(root, file), root, { params }, { url, here: { path, params } }, label, plugins);
+  const { r, logs } = await runServerCode(root, file, entry, path, root, { params }, { url, here: { path, params } }, label, plugins);
   if (!r.ok) {
     if (logs) console.error(`${label}:\n${logs}`);
     // Not kept: run again next time (it may have failed on something passing).

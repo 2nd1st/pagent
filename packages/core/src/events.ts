@@ -1,7 +1,7 @@
 // One SSE stream to the shell: code changes, data changes, agent activity.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { watch } from "node:fs";
-import { dirname, sep } from "node:path";
+import { realpathSync, watch } from "node:fs";
+import { dirname, join, sep } from "node:path";
 import { CODE } from "./tree.ts";
 
 /**
@@ -9,7 +9,9 @@ import { CODE } from "./tree.ts";
  * events typed as the bridge's AgentEvent): each package is built on its own, so each end writes the protocol down.
  */
 export type HostEvent =
-  | { type: "code"; path: string }
+  // path: the node whose code changed (the file is in its folder); nodes: the others whose compiled code was made from
+  // that file (a root _ui/ their page or layout imports), which a change there changes too.
+  | { type: "code"; path: string; nodes?: string[] }
   | { type: "deps"; id: string } // the app's shared npm modules were rebuilt (deps.ts)
   | { type: "data"; path: string; file: string }
   | { type: "agent"; node: string; agent: string; event: Record<string, unknown> }
@@ -56,13 +58,19 @@ export function onEvent(cb: (e: HostEvent) => void): () => void {
   return () => void listeners.delete(cb);
 }
 
-/** Watch the app tree: a change to a node's code is a code change (viewers reload it); any other file is data. */
-export function watchTree(root: string) {
+/**
+ * Watch the app tree: a change to a node's code is a code change (viewers reload it); any other file is data. usersOf:
+ * the nodes whose compiled code was made from a file (Nodes.usersOf, by its real path), which a change to it reaches
+ * too: a file outside their folders (a root _ui/ their layout imports) is no code of theirs by where it is.
+ */
+export function watchTree(root: string, usersOf: (file: string) => string[] = () => []) {
+  const real = realpathSync(root);
   const pending = new Map<string, NodeJS.Timeout>();
   const debounce = (key: string, fn: () => void) => {
     clearTimeout(pending.get(key));
     pending.set(key, setTimeout(() => (pending.delete(key), fn()), 60));
   };
+  const changed = new Map<string, Set<string>>(); // node → its code files changed since its last event
   watch(root, { recursive: true }, (_event, filename) => {
     if (!filename) return;
     const rel = filename.split(sep).join("/");
@@ -75,7 +83,13 @@ export function watchTree(root: string) {
     if (priv >= 0 || CODE.test(file)) {
       const nodeParts = priv >= 0 ? parts.slice(0, priv) : parts.slice(0, -1);
       const path = "/" + nodeParts.join("/");
-      return debounce(`code:${path}`, () => broadcast({ type: "code", path }));
+      changed.set(path, (changed.get(path) ?? new Set<string>()).add(join(real, rel)));
+      return debounce(`code:${path}`, () => {
+        const files = changed.get(path) ?? [];
+        changed.delete(path);
+        const nodes = [...new Set([...files].flatMap(usersOf))].filter((n) => n !== path);
+        broadcast({ type: "code", path, ...(nodes.length ? { nodes } : {}) });
+      });
     }
     const dir = dirname(rel);
     const path = dir === "." ? "/" : "/" + dir;

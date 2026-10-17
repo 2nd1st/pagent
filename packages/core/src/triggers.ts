@@ -50,7 +50,7 @@ const keyOf = (node: string, name: string) => `${node}#${name}`;
 /** What a turn trigger's run is for: the turn (its action's input), and the triggers that turn came from. */
 type TurnFire = { why: string; input: TurnEvent; from: string[] };
 /** The bridge's TurnEvent (declarations.ts): each package is built on its own, so each writes it down. */
-type TurnEvent = { phase: "start" | "end"; runId: string; agent: string; message: string; from: string; reply?: string };
+type TurnEvent = { phase: "start" | "end"; runId: string; messageId: string; agent: string; message: string; from: string; reply?: string };
 const turnQueue = new Map<string, TurnFire[]>(); // a turn trigger's events that came while it ran
 const MAX_QUEUED = 50;
 
@@ -254,7 +254,8 @@ const turnOrder = new Map<string, Promise<void>>();
 function turnFired(ctx: Ctx, phase: "start" | "end", r: Run, reply?: string) {
   const node = r.ref.node;
   const message = r.user.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
-  const input: TurnEvent = { phase, runId: r.id, agent: r.ref.agent, message, from: callerName(r.caller), ...(phase === "end" ? { reply: reply ?? "" } : {}) };
+  // messageId: the turn's one id, the conversation's too (ChatTurn.id: agents/ids.ts).
+  const input: TurnEvent = { phase, runId: r.id, messageId: r.user.id, agent: r.ref.agent, message, from: callerName(r.caller), ...(phase === "end" ? { reply: reply ?? "" } : {}) };
   const why = `turn ${phase} of ${r.ref.agent}`;
   const next = (turnOrder.get(node) ?? Promise.resolve()).then(async () => {
     const triggers = armedNodes.has(node) ? armed.filter((a) => a.node === node) : await armedOf(ctx, node);

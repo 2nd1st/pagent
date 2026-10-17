@@ -113,11 +113,13 @@ export type Triggers = Record<string, { cron?: string; every?: string; watch?: s
 /**
  * What a turn trigger's action gets, once as the turn starts and once as it ends (for every turn of the agent: a
  * person's, a page's, another agent's, a trigger's; except the turns this trigger's own action led to).
- * runId: the turn's, the same both times; agent: whose; message: what it was asked, as given (without "(from …)");
- * from: who asked ("" a person in a conversation; else as "(from …)" says: "/node#agent", "trigger:/node#name", a
- * page's path, a URL); reply: at the end, the final text of its reply.
+ * runId: the turn's, the same both times; messageId: the id of the message that started it, the one the conversation
+ * shows the turn under (ChatTurn.id), during it and ever after: what to key a record of the turn by, to show it under
+ * the turn (turnFooter); agent: whose; message: what it was asked, as given (without "(from …)"); from: who asked (""
+ * a person in a conversation; else as "(from …)" says: "/node#agent", "trigger:/node#name", a page's path, a URL);
+ * reply: at the end, the final text of its reply.
  */
-export type TurnEvent = { phase: "start" | "end"; runId: string; agent: string; message: string; from: string; reply?: string };
+export type TurnEvent = { phase: "start" | "end"; runId: string; messageId: string; agent: string; message: string; from: string; reply?: string };
 
 /**
  * Tools the page itself implements with useTool: they run in the user's open page. Agents run them with

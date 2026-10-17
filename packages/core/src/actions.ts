@@ -16,12 +16,12 @@ import { pathToFileURL } from "node:url";
 import { build, type Plugin } from "esbuild";
 import { via, type Caller } from "./caller.ts";
 import { withCall } from "./calls.ts";
-import { foreignServerFile, nodeOfFile, notServerModule, serverModule } from "./compile.ts";
+import { foreignServerFile, nodeOfFile, notServerModule, overlayPlugin, ownedBy, serverModule } from "./compile.ts";
 import { engine } from "./engine.ts";
 import { isServerFile } from "./extract.ts";
 import type { Nodes } from "./nodes.ts";
 import { noteLaunch, quitsAfter } from "./quit.ts";
-import { notMade } from "./tree.ts";
+import { codeFiles, fileIn, moduleListing, notMade, overlayOf, ownDirs } from "./tree.ts";
 
 /**
  * What an action did: its return value (none when it returned undefined), or the message it threw (error) with its
@@ -49,15 +49,16 @@ export type RunFor = { caller: Caller; turn?: string };
 
 /** Run a node's action. */
 export async function runAction(root: string, nodes: Nodes, path: string, name: string, input: unknown, how: RunFor): Promise<ActionResult> {
-  const { dir, manifest, params } = await nodes.declarations(path);
+  const { sources, manifest, params } = await nodes.declarations(path);
   const action = manifest.actions.find((a) => a.name === name);
   if (!action) return { ok: false, error: `node ${path} has no action "${name}"`, logs: "" };
   if (notMade(root, path)) return { ok: false, error: `${path} is not made yet (an instance of a dynamic page: open its page first)`, logs: "" };
   const app = how.turn ? quitsAfter(manifest.config) : null;
   const since = Date.now();
-  const source = join(dir, action.file);
+  // An instance's own copy of the file, else its source's; it runs in the instance's folder either way.
+  const source = fileIn(sources, action.file) ?? join(root, path, action.file);
   const { r, logs } = await withCall(via(how.caller, `${path}:${name}`), nodes.self ?? nodes.url ?? "", (call) =>
-    runServerCode(root, source, ENTRY(source), nodeOfFile(root, source), join(root, path), { name, input }, { url: nodes.url, turn: how.turn, call: call.id, here: { path, params: params ?? {} } }, name),
+    runServerCode(root, source, ENTRY(source), path, join(root, path), { name, input }, { url: nodes.url, turn: how.turn, call: call.id, here: { path, params: params ?? {} } }, name),
   );
   if (app) await noteLaunch(how.turn!, app, since).catch((e) => console.warn(`${path}: ${(e as Error).message}`));
   if (!r.ok) return { ok: false, error: r.error ?? "failed", ...(r.stack ? { stack: r.stack } : {}), logs };
@@ -91,18 +92,19 @@ writeSync(3, out);
 `;
 
 // A build remembers the local files it was made from (the "use server" file and what it imports, e.g. a helper or
-// another node's server file), and is made again when one of them changes.
-type Bundle = { file: string; inputs: [string, number][] }; // [file, mtime]
-const bundles = new Map<string, Promise<Bundle>>(); // "use server" file → its latest build
+// another node's server file), and is made again when one of them changes; for an instance, also the places in its
+// folder it looked for a file of its own (tree.ts overlayResolve): one put there since is used from then on.
+type Bundle = { file: string; inputs: [string, number][]; probes: [string, string][] }; // [file, mtime; -1: not there], [folder, moduleListing]
+const bundles = new Map<string, Promise<Bundle>>(); // "use server" file (and whose) → its latest build
 
-const fresh = (b: Bundle) =>
-  b.inputs.every(([f, mtime]) => {
-    try {
-      return statSync(f).mtimeMs === mtime;
-    } catch {
-      return false;
-    }
-  });
+const mtimeOf = (f: string) => {
+  try {
+    return statSync(f).mtimeMs;
+  } catch {
+    return -1;
+  }
+};
+const fresh = (b: Bundle) => b.inputs.every(([f, mtime]) => mtimeOf(f) === mtime) && b.probes.every(([d, l]) => moduleListing(d) === l);
 
 // What the engine offers server code: `import { ax } from "pagent/server"` (server-api.ts). It stays outside the bundle,
 // loaded from the engine itself, so it finds its own files (ax.swift) and an engine update needs no rebuild of the function.
@@ -135,9 +137,11 @@ ${names.map((n) => `export const ${n} = call(${JSON.stringify(n)});`).join("\n")
 /**
  * Server code and other nodes: a "use server" file of another node is imported by its address ("~/wechat/actions")
  * and becomes calls to that node's actions; reached by a relative path it would run here, in the wrong folder, so
- * that is an error. `stubbed` collects the files the stubs were made from (their exports), to rebuild when they change.
+ * that is an error. own: the folders of the node the code belongs to (ownDirs: an instance's and its sources'), whose
+ * "use server" files it may import by a relative path. `stubbed` collects the files the stubs were made from (their
+ * exports), to rebuild when they change.
  */
-function otherNodes(root: string, own: string | null, stubbed: Set<string>): Plugin {
+function otherNodes(root: string, own: string[] | null, stubbed: Set<string>): Plugin {
   return {
     name: "pagent-other-nodes",
     setup(b) {
@@ -153,8 +157,7 @@ function otherNodes(root: string, own: string | null, stubbed: Set<string>): Plu
       });
       b.onLoad({ filter: /\.(c|m)?(t|j)sx?$/, namespace: "file" }, (a) => {
         if (/[\\/]node_modules[\\/]/.test(a.path) || !isServerFile(readFileSync(a.path, "utf8"))) return undefined;
-        const home = nodeOfFile(root, a.path);
-        return home && home === own ? undefined : { errors: [{ text: foreignServerFile(root, a.path, home) }] };
+        return own && ownedBy(root, a.path, own) ? undefined : { errors: [{ text: foreignServerFile(root, a.path, nodeOfFile(root, a.path)) }] };
       });
     },
   };
@@ -162,14 +165,20 @@ function otherNodes(root: string, own: string | null, stubbed: Set<string>): Plu
 
 /**
  * Bundle server code for Node, behind an entry that calls it (its npm imports resolve from the app root). own: the node
- * the code belongs to, whose "use server" files it may import by a relative path (a route belongs to none).
+ * the code belongs to (its address), whose "use server" files it may import by a relative path (a route belongs to none);
+ * an instance's relative imports find its own copy of a file first (tree.ts overlayOf).
  */
 export async function bundle(root: string, source: string, entry: string, own: string | null, extra: Plugin[] = []): Promise<string> {
-  const key = `${source}\n${entry}`;
+  const overlay = own === null ? [] : overlayOf(root, own);
+  const dirs = own === null ? null : ownDirs(root, own);
+  // An instance with no code of its own (most are) builds as every other one of its source does: one build for them all.
+  const mine = overlay.some((o) => codeFiles(o.dir).length > 0);
+  const key = `${source}\n${entry}\n${mine ? own : (dirs?.slice(1).join("\n") ?? "")}`;
   const last = await bundles.get(key)?.catch(() => null);
   if (last && fresh(last)) return last.file;
   const next = (async (): Promise<Bundle> => {
     const stubbed = new Set<string>();
+    const probed = new Set<string>();
     const r = await build({
       stdin: { contents: entry, resolveDir: dirname(source), loader: "js" },
       bundle: true,
@@ -180,21 +189,22 @@ export async function bundle(root: string, source: string, entry: string, own: s
       target: "node22",
       nodePaths: [join(root, "node_modules")],
       logLevel: "silent",
-      plugins: [...extra, serverApi, otherNodes(root, own, stubbed)],
+      plugins: [...extra, serverApi, overlayPlugin(overlay, probed), otherNodes(root, dirs, stubbed)],
       // Bundled CommonJS packages may still call require().
       banner: { js: `import { createRequire as __cr } from "node:module"; const require = __cr(import.meta.url);` },
     });
     const inputs = [
       ...Object.keys(r.metafile!.inputs).filter((f) => f !== "<stdin>" && !f.includes("node_modules/") && !/^[\w-]+:/.test(f)),
       ...stubbed,
-    ].map((f): [string, number] => [resolve(f), statSync(resolve(f)).mtimeMs]);
+    ].map((f): [string, number] => [resolve(f), mtimeOf(resolve(f))]);
+    const probes = [...probed].map((d): [string, string] => [d, moduleListing(d)]);
     const text = r.outputFiles[0].text;
     const out = join(tmpdir(), "pagent-server", `${createHash("sha1").update(text).digest("hex").slice(0, 16)}.mjs`);
     if (!existsSync(out)) {
       mkdirSync(join(tmpdir(), "pagent-server"), { recursive: true });
       writeFileSync(out, text);
     }
-    return { file: out, inputs };
+    return { file: out, inputs, probes };
   })();
   bundles.set(key, next);
   try {
@@ -205,8 +215,8 @@ export async function bundle(root: string, source: string, entry: string, own: s
   }
 }
 
-/** A node's "use server" file, bundled as its actions run (to check that it compiles). */
-export const bundleServerFile = (root: string, source: string) => bundle(root, source, ENTRY(source), nodeOfFile(root, source));
+/** A node's "use server" file, bundled as its actions run (to check that it compiles): as `node`'s, by default its folder's. */
+export const bundleServerFile = (root: string, source: string, node = nodeOfFile(root, source)) => bundle(root, source, ENTRY(source), node);
 
 /** The node server code runs as: its address (as its folder has it) and an instance's params. */
 export type Here = { path: string; params: Record<string, string | string[]> };

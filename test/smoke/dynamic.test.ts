@@ -154,4 +154,26 @@ describe("dynamic pages", () => {
     app.pagent("mv", "/studio/demo/helper", "/studio/demo/helper-2");
     assert.equal((await action<typeof list>("/", "sessions")).find((i) => i.path === "/studio/demo/h3")?.createdBy, "/studio/demo/helper-2#main");
   });
+
+  test("navigation: each page's url and maker, and where a new page can be made (SPEC 13.12)", async () => {
+    type Pages = { pages: { path: string; url: string; createdBy?: string; instanceOf?: string }[]; dynamic: { pattern: string; under: string; title?: string }[] };
+    const { pages, dynamic } = await app.get<Pages>("/_pagent/pages");
+    const at = (p: string) => pages.find((x) => x.path === p)!;
+    assert.equal(at("/").url, "/");
+    assert.equal(at("/studio/demo/+4fee+767b+5f55").url, "/studio/demo/修登录");
+    assert.equal(at("/studio/demo/h3").createdBy, "/studio/demo/helper-2#main");
+    assert.equal(at("/studio/demo/fix-login").createdBy, undefined); // a person opened it
+    // A static parent is one place (/notes); a dynamic one, each that has an instance ([ws] has no page of its own).
+    assert.deepEqual(dynamic, [
+      { pattern: "/notes/[...path]", under: "/notes" },
+      { pattern: "/studio/[ws]/[id]", under: "/studio/demo" },
+      { pattern: "/studio/[ws]/[id]", under: "/studio/harness-app" },
+    ]);
+    // A page on screen looking again after a change (again=1) does not make one that is gone; opening it does.
+    await app.post("/_pagent/remove", { path: "/studio/demo/fix-login" });
+    await assert.rejects(app.get(`/_pagent/node?${qs({ path: "/studio/demo/fix-login", again: "1" })}`), /404 .*not there any more/);
+    assert.ok(!existsSync(join(app.root, "studio/demo/fix-login")));
+    await open("/studio/demo/fix-login");
+    assert.ok(existsSync(join(app.root, "studio/demo/fix-login")));
+  });
 });

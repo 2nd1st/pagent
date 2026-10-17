@@ -11,7 +11,7 @@ import { bundleServerFile } from "../packages/core/src/actions.ts";
 import { addNode } from "../packages/core/src/install.ts";
 import { Nodes } from "../packages/core/src/nodes.ts";
 import { bundleRoute, listRoutes, routeInfo } from "../packages/core/src/routes.ts";
-import { codeOf, hasFile, isDynamic, listNodes, nodeDir } from "../packages/core/src/tree.ts";
+import { codeOf, fileIn, hasFile, isDynamic, listNodes, nodeDir, shadowsOf } from "../packages/core/src/tree.ts";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "pagent-check-"));
@@ -61,10 +61,11 @@ apps["create-pagent --lang zh-CN"] = createdZh;
 /**
  * The dynamic pages ([x] and [...x] folders) no made instance of the app covers, each as a made-up instance ("check"
  * for each dynamic segment, its folder made in the scratch copy): listNodes() only has the instances that are made, so
- * a dynamic page would otherwise be checked only once someone had opened it.
+ * a dynamic page would otherwise be checked only once someone had opened it. An instance with code of its own (a file
+ * that shadows the page's, SPEC 13.11) compiles its copy instead of the shared file, so it covers nothing.
  */
 function madeUp(root: string, made: string[]): string[] {
-  const covered = new Set(made.map((m) => codeOf(root, m)?.code));
+  const covered = new Set(made.filter((m) => !shadowsOf(root, m).length).map((m) => codeOf(root, m)?.code));
   const out: string[] = [];
   const walk = (code: string[], at: string[]) => {
     for (const e of readdirSync(join(root, ...code), { withFileTypes: true })) {
@@ -89,7 +90,7 @@ for (const [label, root] of Object.entries(apps)) {
   const made = listNodes(root);
   for (const path of [...made, ...madeUp(root, made)]) {
     const errors: string[] = [];
-    const { dir, files, manifest, refused } = await nodes.declarations(path);
+    const { sources, files, manifest, refused } = await nodes.declarations(path);
     // A made-up instance's params may well be refused by its agents() (an unknown workspace): not an error of its code.
     errors.push(...manifest.errors.filter((e) => e !== refused || made.includes(path)));
     for (const file of files) {
@@ -98,7 +99,8 @@ for (const [label, root] of Object.entries(apps)) {
       compiled++;
     }
     for (const file of new Set(manifest.actions.flatMap((a) => (a.file ? [a.file] : [])))) {
-      await bundleServerFile(root, join(dir, file)).then(
+      // An instance's own copy of the file, else its source's: bundled as this node's.
+      await bundleServerFile(root, fileIn(sources, file) ?? join(root, path, file), path).then(
         () => compiled++,
         (e) => errors.push(`${file}: ${(e as { errors?: { text: string }[] }).errors?.map((x) => x.text).join("; ") ?? (e as Error).message}`),
       );

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { callerLine, type Caller } from "../caller.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { strangerPrompt } from "./prompt.ts";
-import { agentDecl, capabilitiesOf, codeFolder, invoke, nodeFolder, runnerScript } from "./runner.ts";
+import { agentDecl, capabilitiesOf, codeFolders, invoke, nodeFolder, runnerScript } from "./runner.ts";
 import type { Ctx } from "./types.ts";
 
 /** The default cap on a stranger's answer (output tokens). */
@@ -30,7 +30,7 @@ export async function answerStranger(ctx: Ctx, ref: AgentRef, caller: Caller & {
   const input = {
     op: "stranger",
     message: callerLine({ ...caller, stranger: true }, message),
-    systemPrompt: strangerPrompt(ref, nodeFolder(ctx, ref), decl, cap, codeFolder(ctx, ref)),
+    systemPrompt: strangerPrompt(ref, nodeFolder(ctx, ref), decl, cap, codeFolders(ctx, ref)),
     maxOutputTokens: cap,
     options: { ...(typeof decl.model === "string" ? { model: decl.model } : {}) },
   };

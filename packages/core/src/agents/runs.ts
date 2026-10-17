@@ -12,6 +12,7 @@ import { notMade } from "../tree.ts";
 import type { AgentDecl } from "../extract.ts";
 import { driverFor, driverOf, drivers, type SessionDriver } from "./driver.ts";
 import { forget, watchAfter } from "./history.ts";
+import { noteRun } from "./ids.ts";
 import { answered } from "./remote.ts";
 import { agentDecl, runnerScript } from "./runner.ts";
 import { noteStuck, subagentActivity, subagentDoing, toolActivity, toolDoing, type Activity, type SubagentLine } from "./status.ts";
@@ -123,6 +124,7 @@ function runEnded(ctx: Ctx, run: Run, push: Push, text: string, how: RunFor) {
   const { replyTo, replyPost } = how;
   const { ref } = run;
   run.done = true;
+  noteRun(ctx, run); // before anyone reads its history again: the turn keeps its id there
   push(null);
   forget(ref);
   watchAfter(ctx, ref, run);
@@ -193,6 +195,7 @@ export function chunkHandler(run: Run, push: (c: UIMessageChunk) => void, setTex
   const subs = new Map<string, SubagentLine>(); // the run's sub-agents, as last described
   return (c: any) => {
     if (c.type === "data-result") return void setText(String(c.data?.text ?? ""));
+    if (c.type === "data-user") return void (c.data?.id && (run.historyId = String(c.data.id))); // its message's id in the transcript
     if (c.type === "data-session") sessions.set(keyOf(ref), c.data ?? {});
     if (c.type === "data-usage" && c.data) usages.set(keyOf(ref), c.data);
     if (c.type === "tool-input-start" || c.type === "tool-input-available") activity(toolActivity(c), toolDoing(c));

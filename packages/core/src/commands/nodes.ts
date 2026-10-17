@@ -8,7 +8,7 @@ import { screenJob } from "../screen.ts";
 import { appWatch, lastRun } from "../triggers.ts";
 import { agentStatus, type Ctx } from "../agents.ts";
 import { agentTurn, endWhenIdle } from "../quit.ts";
-import { codeDir, hasFile, listNodes } from "../tree.ts";
+import { hasCode, listNodes, shadowsOf } from "../tree.ts";
 import { folderOf, inputOf, json, nodeArg, quote, type Command, type Output } from "./common.ts";
 
 const appWhen = (t: true | { id?: string; label?: string; role?: string }) =>
@@ -73,7 +73,7 @@ async function actionHelp(ctx: Ctx, node: string, name: string): Promise<string>
 export const treeCommand: Command = {
   name: "tree",
   usage: "",
-  about: "Every node of the app: path, title (its metadata.title, shown in the app's navigation), folder, whether it is a page, its agents, actions, page tools and triggers (when, the action they run, their last result; to test one, `pagent run` its action).",
+  about: "Every node of the app: path, title (its metadata.title, shown in the app's navigation), folder, whether it is a page, an instance's source (instanceOf) and the files of its own that shadow it (shadows), its agents, actions, page tools and triggers (when, the action they run, their last result; to test one, `pagent run` its action).",
   run: async ({ ctx }) => {
     const rows = [];
     for (const path of listNodes(ctx.root)) {
@@ -84,8 +84,10 @@ export const treeCommand: Command = {
         path,
         ...(m.title ? { title: m.title } : {}),
         folder: folderOf(ctx, path),
-        route: !path.split("/").some((s) => s.startsWith(".")) && hasFile(codeDir(ctx.root, path), "page"),
-        ...(i.code ? { instanceOf: i.code, params: i.params } : {}),
+        route: !path.split("/").some((s) => s.startsWith(".")) && hasCode(ctx.root, path, "page"),
+        ...(i.code ? { instanceOf: i.code, params: i.params } : i.of ? { instanceOf: i.of } : {}),
+        // An instance's own code files: each shadows the same-named file of the code it shares (SPEC 13.11).
+        ...(i.code || i.of ? { shadows: shadowsOf(ctx.root, path) } : {}),
         agents: m.agents.map((a) => `${path}#${a.name} (${a.runner})`),
         actions: m.actions.map((a) => a.name),
         tools: m.tools.map((t) => t.name),

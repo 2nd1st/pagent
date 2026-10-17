@@ -9,9 +9,9 @@ import type { AgentDecl } from "../extract.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { harnessEnv, outerSessionsFrom, type OuterSession } from "../shell-env.ts";
 import { terminalOf } from "../terminal.ts";
-import { codeOf } from "../tree.ts";
+import { codeOf, sharing } from "../tree.ts";
 import { agentAccess } from "./identity.ts";
-import { systemPrompt } from "./prompt.ts";
+import { systemPrompt, type Place } from "./prompt.ts";
 import type { Ctx } from "./types.ts";
 
 /** A runner: one of the engine's, by name, or any script speaking the contract, by its absolute path. */
@@ -130,10 +130,17 @@ export async function agentDecl(ctx: Ctx, ref: AgentRef): Promise<AgentDecl> {
 /** A node's folder, without the trailing slash join() leaves on "/" (harnesses key sessions by the exact path). */
 export const nodeFolder = (ctx: Ctx, ref: AgentRef) => resolve(ctx.root, `.${ref.node}`);
 
-/** The folder of an instance's code (its dynamic page's, tree.ts), or undefined for a node whose code is its own. */
-export function codeFolder(ctx: Ctx, ref: AgentRef): string | undefined {
-  const c = codeOf(ctx.root, ref.node);
-  return c && c.code !== c.path ? resolve(ctx.root, `.${c.code}`) : undefined;
+/**
+ * The folders an instance's code falls through to (a dynamic page's, a fork's node's: tree.ts), nearest first; none for a
+ * node whose code is all its own.
+ */
+export const codeFolders = (ctx: Ctx, ref: AgentRef): string[] => (codeOf(ctx.root, ref.node)?.sources.slice(1) ?? []).map((p) => resolve(ctx.root, `.${p}`));
+
+/** Where an agent is, for its system prompt: its node's folder, an instance's shared code and who shares it, its cwd. */
+function placeOf(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown>): Place {
+  const sources = codeFolders(ctx, ref);
+  const shared = sources.length ? { code: sources[0], sources, sharing: sharing(ctx.root, ref.node).length } : {};
+  return { dir: nodeFolder(ctx, ref), ...shared, cwd: agentCwd(ctx, ref, decl), root: ctx.root };
 }
 
 /** Where an agent's harness runs: its node's folder, or (for an adopted session) the folder that session lives in. */
@@ -175,7 +182,7 @@ export async function agentInput(ctx: Ctx, ref: AgentRef, decl: AgentDecl) {
     appRoot: ctx.root,
     pluginDirs: [engine.skill],
     ...(await ownConfig(ctx, ref, decl)),
-    systemPrompt: systemPrompt(ref, { dir: nodeFolder(ctx, ref), code: codeFolder(ctx, ref), cwd: agentCwd(ctx, ref, decl), root: ctx.root }, decl),
+    systemPrompt: systemPrompt(ref, placeOf(ctx, ref, decl), decl),
     options: decl,
   };
 }
@@ -191,21 +198,23 @@ export async function agentInput(ctx: Ctx, ref: AgentRef, decl: AgentDecl) {
  * The runner gets the skills as SKILL.md folders, and the servers as written.
  */
 async function ownConfig(ctx: Ctx, ref: AgentRef, decl: AgentDecl): Promise<{ skills?: string[]; mcps?: Record<string, unknown> }> {
-  const found: { skills?: { value: unknown; dir: string }; mcps?: { value: unknown; dir: string } } = {};
-  const look = (from: Record<string, unknown> | null | undefined, dir: string) => {
+  const found: { skills?: { value: unknown; dirs: string[] }; mcps?: { value: unknown } } = {};
+  const look = (from: Record<string, unknown> | null | undefined, dirs: string[]) => {
     if (!from) return;
-    if (found.skills === undefined && from.skills !== undefined) found.skills = { value: from.skills, dir };
-    if (found.mcps === undefined && from.mcps !== undefined) found.mcps = { value: from.mcps, dir };
+    if (found.skills === undefined && from.skills !== undefined) found.skills = { value: from.skills, dirs };
+    if (found.mcps === undefined && from.mcps !== undefined) found.mcps = { value: from.mcps };
   };
-  look(decl, codeFolder(ctx, ref) ?? nodeFolder(ctx, ref)); // "./x": beside the code that declares it
+  // "./x": beside the code that declares it (an instance's own folder first, then the code it shadows).
+  const folders = (r: AgentRef) => [nodeFolder(ctx, r), ...codeFolders(ctx, r)];
+  look(decl, folders(ref));
   for (let path = ref.node; ; path = path.replace(/\/[^/]*$/, "") || "/") {
     if (found.skills && found.mcps) break;
     const config = (await ctx.nodes.declarations(path).catch(() => null))?.manifest.config;
-    look(config, codeFolder(ctx, { node: path, agent: "" }) ?? nodeFolder(ctx, { node: path, agent: "" }));
+    look(config, folders({ node: path, agent: "" }));
     if (path === "/") break;
   }
   const out: { skills?: string[]; mcps?: Record<string, unknown> } = {};
-  if (found.skills) out.skills = skillFolders(ctx, ref, found.skills.value, found.skills.dir);
+  if (found.skills) out.skills = skillFolders(ctx, ref, found.skills.value, found.skills.dirs);
   if (found.mcps) {
     const m = found.mcps.value;
     if (m && typeof m === "object" && !Array.isArray(m)) out.mcps = m as Record<string, unknown>;
@@ -214,12 +223,16 @@ async function ownConfig(ctx: Ctx, ref: AgentRef, decl: AgentDecl): Promise<{ sk
   return out;
 }
 
-/** Declared skills as the folders of their SKILL.md files (a folder of skills gives each); what is not there is said. */
-function skillFolders(ctx: Ctx, ref: AgentRef, value: unknown, dir: string): string[] {
+/**
+ * Declared skills as the folders of their SKILL.md files (a folder of skills gives each); what is not there is said.
+ * dirs: where "./x" is looked for, the first that has it (an instance's folder, then the code it shadows).
+ */
+function skillFolders(ctx: Ctx, ref: AgentRef, value: unknown, dirs: string[]): string[] {
   const out: string[] = [];
   for (const entry of Array.isArray(value) ? value : [value]) {
     if (typeof entry !== "string" || !entry) continue;
-    const path = entry.startsWith("~/") ? join(ctx.root, entry.slice(2)) : isAbsolute(entry) ? entry : resolve(dir, entry);
+    const near = () => dirs.map((d) => resolve(d, entry)).find((p) => existsSync(p)) ?? resolve(dirs[0], entry);
+    const path = entry.startsWith("~/") ? join(ctx.root, entry.slice(2)) : isAbsolute(entry) ? entry : near();
     if (existsSync(join(path, "SKILL.md"))) out.push(path);
     else {
       const inside = existsSync(path) && statSync(path).isDirectory() ? readdirSync(path).map((f) => join(path, f)).filter((f) => existsSync(join(f, "SKILL.md"))) : [];

@@ -14,6 +14,7 @@
 //   !card <path> [JSON]  write a block of the reply that shows that node as a card
 //   !own                 write the skills and MCP servers the agent declares, as the runner got them (JSON)
 //   !root                write the app's folder, as the runner got it (appRoot)
+//   !prompt              write the system prompt, as the runner got it (headless turns)
 //   !title <text>        name the session (as Claude Code's ai-title does); the "last" op says the latest
 //   !agents <n> <ms>     run n sub-agents side by side (as Claude Code's Agent tool does), each a step every ms for 3
 //                        steps, in the generic shape (runners/src/lib/subagents.ts); kept in the transcript as parts
@@ -28,6 +29,8 @@
 // session; the reply says what it was asked for: "(one-off, no tools, at most <cap> tokens, as a stranger) echo: <words>".
 // Its usage (the "usage" op, and a data-usage chunk at the end of each turn): 1000 tokens of context per message in the
 // session, 10 of output per reply, a window of 200k.
+// The id its transcript keeps a message under: on a thread, each message's "user" event says it (as Codex's item id
+// does); headless and in the TUI it says none, so the engine finds the message by its words (core: agents/ids.ts).
 import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
@@ -41,7 +44,7 @@ import type { UIMessage, UIMessageChunk } from "ai";
 // thread: the thread the agent's session has open (fake-thread.ts).
 // skills, mcps: what the agent declares instead of its harness's own (core: agents/runner.ts, ownConfig).
 // appRoot: the app's folder (core: agents/runner.ts, agentInput).
-type Input = { op: string; message?: string; cwd: string; stateDir: string; env?: Record<string, string>; tui?: number; session?: string; thread?: string; skills?: string[]; mcps?: Record<string, unknown>; appRoot?: string };
+type Input = { op: string; message?: string; cwd: string; stateDir: string; env?: Record<string, string>; tui?: number; session?: string; thread?: string; skills?: string[]; mcps?: Record<string, unknown>; appRoot?: string; systemPrompt?: string };
 // "end": the TUI finished a turn (what the follow op waits for).
 // "parts": parts of the reply other than text (the sub-agents of !agents), as they are shown.
 // "queued": a message typed into the TUI while it was in a turn (Claude Code's queue-operation enqueue); it is a
@@ -74,9 +77,9 @@ function sessionOf(input: Where): string {
 }
 const transcript = (input: Where) => join(input.stateDir, `${sessionOf(input)}.jsonl`);
 
-function write(input: Where, type: Entry["type"], text: string, parts?: UIMessage["parts"]) {
+function write(input: Where, type: Entry["type"], text: string, parts?: UIMessage["parts"], uuid: string = randomUUID()) {
   mkdirSync(input.stateDir, { recursive: true });
-  appendFileSync(transcript(input), JSON.stringify({ uuid: randomUUID(), type, text, at: new Date().toISOString(), ...(parts ? { parts } : {}) } satisfies Entry) + "\n");
+  appendFileSync(transcript(input), JSON.stringify({ uuid, type, text, at: new Date().toISOString(), ...(parts ? { parts } : {}) } satisfies Entry) + "\n");
 }
 
 function entries(input: Input): Entry[] {
@@ -91,9 +94,12 @@ function entries(input: Input): Entry[] {
 type Ctl = { signal?: AbortSignal; next?: () => string | undefined; ask?: (command: string) => Promise<boolean> };
 const stepsOf = (message: string) => message.split("\n").map((l) => l.replace(/^\(from \S+\) /, "").trim());
 
-/** One turn: the message's steps, the reply written to the transcript (and, headless, as chunks). Returns its text. */
-async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps" | "appRoot">, message: string, emit: (c: UIMessageChunk) => void, ctl: Ctl = {}): Promise<string> {
-  write(input, "user", message);
+/**
+ * One turn: the message's steps, the reply written to the transcript (and, headless, as chunks). Returns its text. id:
+ * the message's in the transcript (a thread says it as the message comes in).
+ */
+async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps" | "appRoot" | "systemPrompt">, message: string, emit: (c: UIMessageChunk) => void, ctl: Ctl = {}, id?: string): Promise<string> {
+  write(input, "user", message, undefined, id);
   const said: string[] = [];
   const say = (text: string) => {
     const id = randomUUID();
@@ -120,6 +126,7 @@ async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps"
     else if (step === "title") write(input, "title", arg);
     else if (step === "own") (acted = true), say(JSON.stringify({ skills: input.skills ?? null, mcps: input.mcps ?? null }));
     else if (step === "root") (acted = true), say(input.appRoot ?? "");
+    else if (step === "prompt") (acted = true), say(input.systemPrompt ?? "");
     else if (step === "slow") {
       acted = true;
       const [n, ms] = arg.split(/\s+/).map(Number);
@@ -391,23 +398,25 @@ function service() {
 async function sessionProgram(input: Input, commands: AsyncIterator<string>) {
   const thread = sessionOf(input);
   const where = { stateDir: input.stateDir, session: thread, cwd: input.cwd, env: input.env, skills: input.skills, mcps: input.mcps };
-  let current = null as { id: string; lines: string[]; queue: string[]; said: string; stop: AbortController } | null;
+  let current = null as { id: string; lines: string[]; queue: { text: string; id: string }[]; said: string; stop: AbortController } | null;
   const emit = (o: Record<string, unknown>) => {
     const line = JSON.stringify(o);
     current?.lines.push(line);
     process.stdout.write(line + "\n");
   };
+  // Each message says the id the thread keeps it under (as Codex's item id), which its history has it under.
   const message = (text: string, clientId: string | null, meta?: unknown) => {
+    const id = randomUUID();
     if (current) {
-      emit({ type: "user", turnId: current.id, text, clientId, meta });
-      current.queue.push(text);
+      emit({ type: "user", turnId: current.id, id, text, clientId, meta });
+      current.queue.push({ text, id });
       return;
     }
-    const t = (current = { id: randomUUID(), lines: [], queue: [text], said: "", stop: new AbortController() });
+    const t = (current = { id: randomUUID(), lines: [], queue: [{ text, id }], said: "", stop: new AbortController() });
     emit({ type: "turn", turnId: t.id });
-    emit({ type: "user", turnId: t.id, text, clientId, meta });
+    emit({ type: "user", turnId: t.id, id, text, clientId, meta });
     void (async () => {
-      for (let next; !t.stop.signal.aborted && (next = t.queue.shift()) !== undefined; ) t.said = (await turn(where, next, emit, { signal: t.stop.signal })) || t.said;
+      for (let next; !t.stop.signal.aborted && (next = t.queue.shift()) !== undefined; ) t.said = (await turn(where, next.text, emit, { signal: t.stop.signal }, next.id)) || t.said;
       emit({ type: "turn-end", turnId: t.id, status: t.stop.signal.aborted ? "interrupted" : "completed", text: t.said });
       current = null;
     })();

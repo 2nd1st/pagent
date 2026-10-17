@@ -1,10 +1,12 @@
 // Instances of an imported node, as the server makes them: each in a folder of its own under its parent's .mounts/,
-// named after its key (the bridge asks for the path; instance.ts), never taken for an instance of another node.
+// named after its key (the bridge asks for the path; instance.ts), never taken for an instance of another node. Its
+// data is its own (seeded from its node's); its code stays its node's (SPEC 13.11: nothing of it is copied).
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { instanceDir } from "../../packages/bridge/src/instance.ts";
+import { recordOf } from "../../packages/core/src/tree.ts";
 import { testApp, type TestApp } from "../lib/app.ts";
 
 describe("instances", () => {
@@ -18,7 +20,7 @@ describe("instances", () => {
     return { path, notes: r.notes ?? [] };
   };
   const todos = (path: string) => app.get<{ content: unknown }>(`/_pagent/data?${qs({ path, file: "todos.json" })}`).then((d) => d.content);
-  const recorded = (path: string) => JSON.parse(readFileSync(join(app.root, path, ".state", "fork.json"), "utf8")).from;
+  const recorded = (path: string) => recordOf(join(app.root, path))?.of; // wherever it is kept (tree.ts)
   const ignoresCase = () => existsSync(join(app.root, "TODO"));
 
   before(async () => {
@@ -46,14 +48,14 @@ describe("instances", () => {
     const home = await render("~/todo", "家庭");
     assert.equal(work.path, "/.mounts/+5de5+4f5c");
     assert.equal(home.path, "/.mounts/+5bb6+5ead");
-    for (const p of [work.path, home.path]) assert.ok(existsSync(join(app.root, p, "page.tsx")), p);
+    for (const p of [work.path, home.path]) assert.ok(existsSync(join(app.root, p)) && !existsSync(join(app.root, p, "page.tsx")), p); // its code stays its node's
     const r = await app.post<{ ok: boolean }>("/_pagent/action", { node: work.path, name: "add", input: { text: "写周报" } });
     assert.equal(r.ok, true);
     assert.deepEqual(await todos(work.path), ["写周报"]);
     assert.deepEqual(await todos(home.path), []);
     assert.deepEqual(await todos("/todo"), []); // the source keeps its own
     assert.deepEqual(await todos("/.mounts/__"), ["old"]); // left as it was
-    assert.equal(recorded(work.path), "~/todo");
+    assert.equal(recorded(work.path), "/todo");
     // Not moved, not a stop: a note in each one's frame, and once in the server's log.
     assert.equal(work.notes.length, 1);
     assert.match(work.notes[0], /\/\.mounts\/\+5de5\+4f5c is the instance for the key "工作"\. An older pagent kept it in \/\.mounts\/__ .*move what you need from it into this one, then delete \/\.mounts\/__/);
@@ -69,14 +71,14 @@ describe("instances", () => {
 
   test("a plain key keeps its folder's name", async () => {
     assert.equal((await render("~/todo", "work")).path, "/.mounts/work");
-    assert.ok(existsSync(join(app.root, ".mounts", "work", "page.tsx")));
+    assert.ok(existsSync(join(app.root, ".mounts", "work", "todos.json"))); // its data, seeded from its node's
     await render("~/todo", "work"); // again: the same instance
   });
 
   test("two components with one key under one node (its layout and its page): an error that says so", async () => {
     await render("~/todo", "a");
     await assert.rejects(render("~/notes", "a"), /\/\.mounts\/a: two components under \/ have the key \\"a\\", one an instance of ~\/todo \(this folder is its instance\), the other of ~\/notes; give one of them another key/);
-    assert.equal(recorded("/.mounts/a"), "~/todo");
+    assert.equal(recorded("/.mounts/a"), "/todo");
     await render("~/todo", "a"); // its own node still renders it
   });
 
@@ -84,7 +86,7 @@ describe("instances", () => {
     await render("~/todo", "s");
     await assert.rejects(
       render("~/notes", "s"),
-      /\/\.mounts\/s was made as an instance of ~\/todo and is now rendered as one of ~\/notes .*another key .*delete the folder \/\.mounts\/s .*delete \/\.mounts\/s\/\.state\/fork\.json/,
+      /\/\.mounts\/s was made as an instance of ~\/todo and is now rendered as one of ~\/notes .*another key .*delete the folder \/\.mounts\/s .*delete \/\.mounts\/s\/\.state\/instance\.json/,
     );
   });
 
@@ -92,16 +94,16 @@ describe("instances", () => {
     const r = await render("~/lists", "r");
     renameSync(join(app.root, "lists"), join(app.root, "tasks"));
     await render("~/tasks", "r");
-    assert.equal(recorded(r.path), "~/tasks");
+    assert.equal(recorded(r.path), "/tasks");
     // ~/Tasks is ~/tasks where the disk ignores case; elsewhere it is no node, and the instance is ~/tasks's.
     if (ignoresCase()) await render("~/Tasks", "r");
     else await assert.rejects(render("~/Tasks", "r"), /was made as an instance of ~\/tasks/);
-    assert.equal(recorded(r.path), "~/tasks");
+    assert.equal(recorded(r.path), "/tasks");
   });
 
   test("an instance made before: it is the first node's that asks for it, from then on", async () => {
     await render("~/notes", "old");
-    assert.equal(recorded("/.mounts/old"), "~/notes");
+    assert.equal(recorded("/.mounts/old"), "/notes");
     await assert.rejects(render("~/todo", "old"), /was made as an instance of ~\/notes and is now rendered as one of ~\/todo/);
   });
 

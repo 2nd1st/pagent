@@ -153,7 +153,7 @@ export async function tuiTurn(term: Term, script: string, base: Record<string, u
   const followed = invoke(script, { op: "follow", ...base, ...(term.pid ? { tui: term.pid } : {}) }, String(base.cwd), (c) => {
     if (c.type === "mark") return void ((marked = true), onMark());
     if (!marked) return;
-    if (c.type === "taken") return join(f, String(c.text ?? ""));
+    if (c.type === "taken") return join(f, String(c.text ?? ""), c.id);
     forward(c);
     for (const j of f.joined) j.forward(c);
   }, (c) => (child = c));
@@ -183,11 +183,15 @@ type Joined = { run: Run; push: Push; message: string; forward: (c: any) => void
 type Following = { term: Term; end: () => void; waiting: Joined[]; joined: Joined[] };
 const following = new Map<string, Following>();
 
-/** The TUI took a message typed during the turn in: its run joins the turn (by its text, else the one typed first). */
-function join(f: Following, text: string) {
+/**
+ * The TUI took a message typed during the turn in: its run joins the turn (by its text, else the one typed first). id:
+ * the transcript's for it, when the runner knows it (ids.ts).
+ */
+function join(f: Following, text: string, id?: unknown) {
   const at = f.waiting.findIndex((j) => j.message.trim() === text.trim());
   const [j] = f.waiting.splice(at < 0 ? 0 : at, 1);
   if (!j) return; // the turn's own message (typed into a busy TUI), or one a person typed there
+  if (typeof id === "string" && id) j.run.historyId = id;
   j.push({ type: "start" });
   f.joined.push(j);
 }

@@ -289,9 +289,10 @@ const Chevron = () => (
 
 /**
  * A turn of the conversation, as a page sees it under itself (AgentConsole's turnFooter): what started it (a person's
- * message, a page's, or, folded, the agents' exchange) and the replies, until the next. id: its first message's;
- * prompt: what it was asked, as given (the text of that message); messages: all of it, in order; running: it is the
- * last one and the agent is still at it.
+ * message, a page's, or, folded, the agents' exchange) and the replies, until the next. id: its first message's, the
+ * same a turn trigger's action gets for that turn (TurnEvent.messageId), now and after a reload; prompt: what it was
+ * asked, as given (the text of that message); messages: all of it, in order; running: it is the last one and the agent
+ * is still at it.
  */
 export type ChatTurn = { id: string; prompt: string; messages: UIMessage[]; running: boolean };
 
