@@ -14,14 +14,23 @@ import { Crumbs, notifyChange, Rail, useDocumentTitle, useNotifySetting, usePage
 type RouteEntry = { path: string; file: "page" | "layout" };
 
 // The engine's words are in the app's language, its home page's metadata.lang (i18n.ts): as this browser last saw it
-// until the pages come, so a reload does not start in English.
+// until the pages come, so a reload does not start in English. So is the page's, unless the page says its own; where
+// neither says one, it is the reader's (pages are written in the language people write in).
 const LANG_KEY = "pagent.lang";
+const READER = navigator.language || "en";
+let stored: string | null = null;
 try {
-  setLanguage(localStorage.getItem(LANG_KEY));
+  stored = localStorage.getItem(LANG_KEY);
 } catch {}
+setLanguage(stored);
+document.documentElement.lang = stored ?? READER;
 
-/** The app's language, from its pages (null: it declares none), said to the engine's words and remembered here. */
-function useAppLanguage(pages: Page[] | null) {
+/**
+ * The app's language, from its pages (null: it declares none), said to the engine's words and remembered here; and the
+ * page's, said to the browser (<html lang>: fonts, line breaking, quotes): the one the page at `path` says it is in,
+ * else the app's, else the reader's.
+ */
+function useAppLanguage(pages: Page[] | null, path: string) {
   const lang = pages ? (pages.find((p) => p.path === "/")?.lang ?? null) : undefined;
   useEffect(() => {
     if (lang === undefined) return; // not known yet
@@ -31,6 +40,10 @@ function useAppLanguage(pages: Page[] | null) {
       else localStorage.removeItem(LANG_KEY);
     } catch {}
   }, [lang]);
+  const page = pages ? (pages.find((p) => p.path === path)?.lang ?? lang) : undefined;
+  useEffect(() => {
+    if (page !== undefined) document.documentElement.lang = page ?? READER;
+  }, [page]);
   useLanguage();
 }
 
@@ -192,7 +205,7 @@ export function App() {
     return h;
   }, []);
   const pages = usePages();
-  useAppLanguage(pages);
+  useAppLanguage(pages, path);
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
   const statuses = useStatuses(pages, (key, before, after) => notifyChange(key, before, after, pagesRef.current));
