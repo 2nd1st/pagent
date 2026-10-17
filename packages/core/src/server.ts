@@ -28,7 +28,7 @@ import { presence, screenResult } from "./screen.ts";
 import { broadcast, onEvent, sse, watchTree } from "./events.ts";
 import { ensureFork } from "./fork.ts";
 import { clientInfo, Nodes } from "./nodes.ts";
-import { isNode, normPath, resolveRoute, type NodeFile } from "./tree.ts";
+import { instancePathError, isNode, normPath, resolveRoute, type NodeFile } from "./tree.ts";
 import { isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
 
 const env = (k: string) => process.env[`PAGENT_${k}`];
@@ -219,11 +219,17 @@ export function startServer(opts: ServerOptions) {
         case "GET /_pagent/pages":
           return json(res, 200, { pages: await nodes.pages() });
 
+        // from: an instance (<node>/.mounts/<its key's folder>) of that node, made when it is not there yet; notes: what
+        // its frame shows besides it (fork.ts).
         case "GET /_pagent/node": {
           const path = normPath(q("path"));
-          if (q("from")) await ensureFork(root, path, q("from"));
-          else if (!isNode(root, path)) return json(res, 404, { error: `no node at ${path}` }); // e.g. a card naming a page that is gone
-          return json(res, 200, clientInfo(await nodes.info(path)));
+          let notes: string[] = [];
+          if (q("from")) {
+            const bad = instancePathError(path);
+            if (bad) return json(res, 400, { error: bad });
+            notes = await ensureFork(root, path, q("from"));
+          } else if (!isNode(root, path)) return json(res, 404, { error: `no node at ${path}` }); // e.g. a card naming a page that is gone
+          return json(res, 200, { ...clientInfo(await nodes.info(path)), ...(notes.length ? { notes } : {}) });
         }
 
         case "GET /_pagent/module": {

@@ -220,6 +220,12 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
   padding: 10px 12px; margin: 4px 0; white-space: pre-wrap; font-size: 13px;
 }
 .pagent-error pre { margin: 6px 0 0; white-space: pre-wrap; }
+/* Something to know about a node that does not stop it (an instance's older folder still there) */
+.pagent-note {
+  color: var(--pagent-working-text); background: color-mix(in srgb, var(--pagent-working) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pagent-working) 30%, transparent); border-radius: var(--pagent-radius-sm);
+  padding: 8px 12px; margin: 4px 0; white-space: pre-wrap; font-size: 13px;
+}
 
 /* Icon buttons (the top bar, a console's head, a dismiss ×) */
 .pagent-icon { border: 0; background: transparent; padding: 2px 6px; font-size: 16px; line-height: 1; color: var(--pagent-muted); cursor: pointer; border-radius: var(--pagent-radius-sm); }

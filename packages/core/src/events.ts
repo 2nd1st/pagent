@@ -63,7 +63,8 @@ export function watchTree(root: string) {
     const parts = rel.split("/");
     const file = parts[parts.length - 1];
     if (file.startsWith(".")) return;
-    const priv = parts.findIndex((p) => p.startsWith("_"));
+    // A _folder is private code of its node; but in .mounts each folder is an instance, named after its key (`_draft`).
+    const priv = parts.findIndex((p, i) => p.startsWith("_") && parts[i - 1] !== ".mounts");
     if (priv >= 0 || CODE.test(file)) {
       const nodeParts = priv >= 0 ? parts.slice(0, priv) : parts.slice(0, -1);
       const path = "/" + nodeParts.join("/");

@@ -25,6 +25,7 @@ is everything that changed.
 | `allow: ["run /wechat", "app read …", "mcp__app__…"]` | Errors: `allow` holds only the harness's own permission rules (`"WebFetch"`, `"Bash(curl:*)"`); `pagent` commands are pre-approved |
 | Messages to agents with `(from …)` built into the text | Every message carries a structured caller (`user`, `page`, `agent`, `trigger`, `pagent`, `external`, with the `via` chain); the `(from …)` line is made from it |
 | Agents reachable from outside through MCP | Closed unless the app opens a message route: `api/<node>/message/route.ts` with `export { inbox as POST } from "pagent/server"` (or your own handler: check `caller` first) |
+| An instance's folder: its key with every character but letters, digits, `_` and `-` as `_` (`key="工作"` and `key="家庭"` were both `.mounts/__`, one instance) | One folder per key: other characters as `+` and their code (`.mounts/+5de5+4f5c`); keys of letters, digits, `_` and `-` keep their folder. Such an instance starts afresh from its node; the old folder stays where it was, and the instance's frame names it: move what you need from it, then delete it |
 
 ## How to migrate an app
 

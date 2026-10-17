@@ -16,6 +16,8 @@ export type NodeInfo = {
   files: string[];
   version: string;
   manifest: { agents: { name: string }[]; actions: { name: string }[]; errors: string[] };
+  /** What to know about an instance that does not stop it (an older pagent's folder for its key is still there). */
+  notes?: string[];
 };
 
 class Boundary extends Component<{ path: string; children: ReactNode }, { error: Error | null }> {
@@ -104,6 +106,7 @@ export function NodeFrame({
       {error && <div className={/^no node at /.test(error) ? "pagent-muted pagent-missing" : "pagent-error"}>{error}</div>}
       {/* The code on disk is what everyone sees: its problems are shown, so the user can ask its agent to fix them. */}
       {errors.length > 0 && <pre className="pagent-error">{errors.join("\n")}</pre>}
+      {info?.notes?.map((n) => <div key={n} className="pagent-note">{n}</div>)}
       <ScopeContext.Provider value={scope}>
         {info && !info.files.includes(file) ? (
           <div className="pagent-muted pagent-missing">no {file}.tsx at {path}</div>
