@@ -348,8 +348,7 @@ summary.pagent-compaction-line:hover { color: var(--pagent-muted); }
   margin: 2px 0 8px; padding: 8px 10px; border-radius: var(--pagent-radius-sm); background: var(--pagent-surface-2);
   max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.55;
 }
-.pagent-toolcard pre::before { display: block; font-family: var(--pagent-font); font-size: 11px; font-weight: 500; color: var(--pagent-faint); margin-bottom: 4px; content: "Input"; }
-.pagent-toolcard pre.pagent-toolcard-out::before { content: "Output"; }
+.pagent-toolcard pre::before { display: block; font-family: var(--pagent-font); font-size: 11px; font-weight: 500; color: var(--pagent-faint); margin-bottom: 4px; content: attr(data-label); }
 .pagent-toolcard-out { color: var(--pagent-muted); }
 /* A sub-agent (its harness's own: Claude Code's Agent, Codex's spawn_agent): one quiet row, a dot for how it is doing,
    its kind, what it was asked, and what it is doing now (or how it went); open, its steps under a thin line */

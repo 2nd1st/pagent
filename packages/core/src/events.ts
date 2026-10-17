@@ -16,6 +16,13 @@ export type HostEvent =
   | { type: "screen"; id: string; clientId: string; node: string; job: Record<string, unknown> }
   | { type: "trigger"; node: string; name: string; why: string };
 
+/**
+ * The engine's own words in what it tells the pages (what an agent is doing, a permission it asks for), as words of the
+ * shell's table (bridge: i18n.ts, its English and the other languages) and the values that go in them: the page says
+ * them in the app's language. The English is sent too, as the text itself.
+ */
+export type Say = { key: string; values?: Record<string, string | number | Say> };
+
 const clients = new Map<ServerResponse, string | null>(); // stream → the browser's client id
 
 /** A browser's event stream. The ping is a real event so the browser can tell a dead stream (e.g. a proxy holding it after a restart) and reconnect. */

@@ -12,12 +12,14 @@ import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } f
 import { join } from "node:path";
 import { parseEnv } from "node:util";
 import type { AgentRef, Ctx } from "./agents.ts";
+import type { Say } from "./events.ts";
 import { axModule } from "./ax-module.ts";
 import { bridgeOf } from "./commands/common.ts";
 
 export type Into = {
-  /** For the person, on the card: where what they type goes. */
+  /** For the person, on the card: where what they type goes (and the same as words of the shell's table). */
   where: string;
+  whereSay: Say;
   /** Put the value there. Resolves with what the agent is told (never the value). */
   put(value: string): Promise<string>;
 };
@@ -30,6 +32,7 @@ const kinds: Record<string, Kind> = {
     tracked(ctx.root); // said now, before anyone types anything
     return {
       where: `this app's .env file, as ${name}`,
+      whereSay: { key: "into.env", values: { name } },
       put: async (value) => {
         const ignored = setEnv(ctx.root, name, value);
         const shadow = process.env[name] !== undefined ? ` Note: the server's own environment also has ${name}, and that one wins over .env until the server is started without it.` : "";
@@ -44,6 +47,7 @@ const kinds: Record<string, Kind> = {
     const b = await bridgeOf(ctx, me, rest.slice(0, hash));
     return {
       where: `the "${field}" field in ${b.app}`,
+      whereSay: { key: "into.app", values: { field, app: b.app } },
       put: async (value) => {
         const r = await (await axModule()).fill(b.app, field, value);
         return `filled into "${field}" in ${b.app}${r.checked ? " (read back: it is there)" : " (the app took it; it does not read back, e.g. a password field)"}`;

@@ -10,6 +10,7 @@
 // node's own page. There is nothing else to a card: no generated HTML, no second UI system. A page's URL carries the
 // same props as its query (/cards/weather?city=Lisbon&days=3), so "open" shows the same thing full size.
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { t, tWith, useLanguage } from "./i18n.ts";
 import { ScopeContext, useHost } from "./index.tsx";
 
 export type CardRef = { path: string; props: Record<string, unknown>; error?: string };
@@ -103,7 +104,7 @@ function useCardTitle(path: string): string {
     host.pageTitle(path).then((t) => alive && setTitle(t), () => {});
     return () => void (alive = false);
   }, [host, path]);
-  return title ?? (name ? name.charAt(0).toUpperCase() + name.slice(1) : "Home");
+  return title ?? (name ? name.charAt(0).toUpperCase() + name.slice(1) : t("home"));
 }
 
 /**
@@ -128,6 +129,7 @@ export const CardsShownContext = createContext<CardsShown>("open");
  * row folds it (and opens it again); `folded` (else the conversation's CardsShown) is how it starts.
  */
 export function NodeCard({ card, folded }: { card: CardRef; folded?: boolean }): ReactNode {
+  useLanguage();
   const host = useHost();
   const shown = useContext(CardsShownContext);
   const [open, setOpen] = useState(!(folded ?? shown === "folded"));
@@ -141,7 +143,7 @@ export function NodeCard({ card, folded }: { card: CardRef; folded?: boolean }):
   return (
     <div className="pagent-card" data-folded={!open || undefined} data-compact={shown === "compact" || undefined}>
       <div className="pagent-card-head" title={url}>
-        <button type="button" className="pagent-card-fold" aria-expanded={open} title={open ? "Fold" : "Show"} onClick={() => setOpen((o) => !o)}>
+        <button type="button" className="pagent-card-fold" aria-expanded={open} title={t(open ? "card.fold" : "card.show")} onClick={() => setOpen((o) => !o)}>
           <svg className="pagent-chevron" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M6 4l4 4-4 4" />
           </svg>
@@ -150,8 +152,8 @@ export function NodeCard({ card, folded }: { card: CardRef; folded?: boolean }):
             {shows.length > 0 && <span> · {shows.join(" · ")}</span>}
           </span>
         </button>
-        <a className="pagent-card-open" href={url} title="Open as a page">
-          Open
+        <a className="pagent-card-open" href={url} title={t("card.openHint")}>
+          {t("card.open")}
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M6.5 3.5h6v6M12.5 3.5 5 11" />
           </svg>
@@ -165,7 +167,7 @@ export function NodeCard({ card, folded }: { card: CardRef; folded?: boolean }):
             <div className="pagent-muted">{card.error}</div>
           ) : inside.includes(card.path) ? (
             <div className="pagent-muted" data-pagent-card-loop>
-              This is the page the conversation is on, so it is not shown again inside it: <a href={url}>open it</a>.
+              {tWith("card.loop", {}, "link", <a key="link" href={url}>{t("card.loopLink")}</a>)}
             </div>
           ) : (
             <AroundCard.Provider value={[...inside, card.path]}>

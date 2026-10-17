@@ -8,7 +8,7 @@ import { useData, type Agents } from "pagent";
 export const agents = { bot: { cli: "claude", instructions: "_bot.md" }, ops: { cli: "codex", sessionId: "abc" } } satisfies Agents;
 export const tools = { refresh: "Reload the list", select_day: { description: "Pick a day", input: { day: "string", note: "string?", mode: "a|b" } } };
 export const triggers = { tick: { every: "5m", run: "status" }, nightly: { cron: "0 3 * * *", run: "status" } };
-export const metadata = { title: "Board", order: 2 };
+export const metadata = { title: "Board", order: 2, lang: "zh-CN" };
 export default function Page() { return null; }
 `;
 
@@ -45,6 +45,8 @@ test("tools (shorthand input becomes a JSON Schema), triggers, metadata", () => 
   assert.deepEqual(r.triggers.map((t) => t.name), ["tick", "nightly"]);
   assert.equal(r.title, "Board");
   assert.equal(r.order, 2);
+  assert.equal(r.lang, "zh-CN"); // the language it is in (the home page's is the app's: the engine's words follow it)
+  assert.match(analyze(`export const metadata = { title: "x", lang: "Chinese" };`).errors.join(), /metadata.lang must be a language tag/);
 });
 
 test("string actions are gone: an action is a function of a \"use server\" file", () => {

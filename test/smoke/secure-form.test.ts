@@ -64,7 +64,12 @@ describe("a Secure Form", () => {
     assert.match(await ask(app, ASK), /Secure Form .*straight to this app's \.env file, as WEATHER_KEY; you will not see it/);
     const [q] = (await status(app)).questions;
     assert.equal(q.kind, "form");
-    assert.deepEqual(q.form, { fields: [{ name: "env:WEATHER_KEY", label: "Weather API key" }], secret: true, where: "this app's .env file, as WEATHER_KEY" });
+    assert.deepEqual(q.form, {
+      fields: [{ name: "env:WEATHER_KEY", label: "Weather API key" }],
+      secret: true,
+      where: "this app's .env file, as WEATHER_KEY",
+      whereSay: { key: "into.env", values: { name: "WEATHER_KEY" } }, // the same, for a page in another language
+    });
     assert.match(await ask(app, ASK), /Still waiting/);
 
     await app.kill();

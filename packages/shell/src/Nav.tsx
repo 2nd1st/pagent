@@ -6,10 +6,12 @@
 // waits on, the last thing it said, when it last talked. A page does not need its own overview of the app's agents.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { quietNote, type AgentStatus } from "@pagent/bridge";
+import { labelOf, sayIn, t } from "@pagent/bridge/i18n";
 import { api, clientId, onHostEvent, qs } from "./host.ts";
 import { go } from "./nav.ts";
 
-export type Page = { path: string; title: string; titled: boolean; agents: string[]; order?: number };
+/** lang: the language the page says it is in (metadata.lang); the home page's is the app's. */
+export type Page = { path: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string };
 
 /** The app's pages (title, agents), reloaded when code changes (a page added, a title changed). */
 export function usePages(): Page[] | null {
@@ -47,12 +49,14 @@ const glanceOf = (s: AgentStatus): Glance => {
   const last = { said: s.said ?? null, lastAt: s.lastAt ?? null };
   // A permission says what it asks about ("Allow Bash? pnpm test"), not only "Allow Bash?".
   const q = s.questions[0];
-  const asking = q ? (q.kind === "permission" && q.detail ? `${q.question} ${q.detail.trim().split("\n")[0]}` : q.question) : null;
+  const question = q && ((q.say && sayIn(q.say.question)) ?? q.question); // the engine's own (a permission) in the app's language
+  const asking = q ? (q.kind === "permission" && q.detail ? `${question} ${q.detail.trim().split("\n")[0]}` : question) : null;
   if (asking) return { ...last, state: "waiting", doing: null, question: asking };
-  if (s.terminal?.state === "blocked") return { ...last, state: "waiting", doing: null, question: s.doing?.label ?? s.activity ?? "waiting in its terminal" };
+  const label = s.doing ? labelOf(s.doing) : s.activity; // in the app's language (i18n.ts)
+  if (s.terminal?.state === "blocked") return { ...last, state: "waiting", doing: null, question: label ?? t("status.waitingTerminal") };
   if (!s.busy) return { ...last, state: "idle", doing: null, question: null };
   const quiet = quietNote(s);
-  return { ...last, state: "working", doing: [s.doing?.label ?? s.activity, quiet].filter(Boolean).join(" · "), detail: s.activity, question: null };
+  return { ...last, state: "working", doing: [label, quiet].filter(Boolean).join(" · "), detail: s.activity, question: null };
 };
 
 /** Every agent's glance, by "node#agent", live. Transitions go to `onChange` (for notifications). */
@@ -115,20 +119,20 @@ const pageGlance = (p: Page, statuses: Map<string, Glance>): Glance | null => {
   return { ...lead, said: lead.said ?? latest.said, lastAt: latest.lastAt ?? lead.lastAt };
 };
 
-const stateText = { idle: "idle", working: "working", waiting: "waiting for you" };
+const stateText = { idle: "status.idle", working: "status.working", waiting: "status.waiting" } as const;
 
 export function Dot({ glance, unread }: { glance: Glance | null; unread?: boolean }) {
   if (!glance) return <span className="pagent-navdot" data-state="none" />;
   const state = glance.state === "idle" && unread ? "unread" : glance.state;
-  return <span className="pagent-navdot" data-state={state} title={state === "unread" ? "said something since you looked" : stateText[glance.state]} />;
+  return <span className="pagent-navdot" data-state={state} title={t(state === "unread" ? "status.unread" : stateText[glance.state])} />;
 }
 
 /** "now", "4m", "3h", "2d": how long ago, short enough for the rail. */
 function ago(iso: string | null | undefined, now: number): string {
-  const t = iso ? Date.parse(iso) : NaN;
-  if (!Number.isFinite(t)) return "";
-  const m = Math.max(0, now - t) / 60_000;
-  return m < 1 ? "now" : m < 60 ? `${Math.floor(m)}m` : m < 48 * 60 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+  const at = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(at)) return "";
+  const m = Math.max(0, now - at) / 60_000;
+  return m < 1 ? t("ago.now") : m < 60 ? t("ago.m", { n: Math.floor(m) }) : m < 48 * 60 ? t("ago.h", { n: Math.floor(m / 60) }) : t("ago.d", { n: Math.floor(m / 1440) });
 }
 
 function useNow(ms = 30_000): number {
@@ -223,7 +227,7 @@ export function Rail({ pages, statuses, current, onPick }: { pages: Page[]; stat
     const here = p.path === current;
     const saidAt = Date.parse(g?.said?.at ?? "") || 0;
     const unread = !here && !!saidAt && saidAt > (seen[p.path] ?? Infinity);
-    const now1 = g?.state === "waiting" ? g.question ?? "waiting for you" : g?.state === "working" ? g.doing ?? "working" : null;
+    const now1 = g?.state === "waiting" ? g.question ?? t("status.waiting") : g?.state === "working" ? g.doing ?? t("status.working") : null;
     const when = ago(g?.lastAt ?? g?.said?.at, now);
     return (
       <a key={p.path} href={p.path} className={`pagent-railitem ${className}`} aria-current={here ? "page" : undefined} data-unread={unread || undefined} style={{ paddingLeft: 8 + depth * 14 }} onClick={onPick}>
@@ -242,7 +246,7 @@ export function Rail({ pages, statuses, current, onPick }: { pages: Page[]; stat
     );
   };
   return (
-    <nav className="pagent-rail" aria-label="Pages" data-pagent-chrome>
+    <nav className="pagent-rail" aria-label={t("app.pages")} data-pagent-chrome>
       {root && item(root, 0, "pagent-railhome")}
       <div className="pagent-raillist">
         {rows.map((r) => ("page" in r ? item(r.page, r.depth) : <div key={"label:" + r.label + r.depth} className="pagent-raillabel" style={{ paddingLeft: 23 + r.depth * 14 }}>{r.label}</div>))}
@@ -260,7 +264,7 @@ export function Crumbs({ path, pages }: { path: string; pages: Page[] | null }) 
     <ol className="pagent-crumbs">
       {trail.map((p, i) => {
         const page = byPath.get(p);
-        const title = page?.title ?? (p === "/" ? "Home" : segs[i - 1].replace(/[-_]+/g, " "));
+        const title = page?.title ?? (p === "/" ? t("home") : segs[i - 1].replace(/[-_]+/g, " "));
         const last = i === trail.length - 1;
         return (
           <li key={p}>
@@ -343,8 +347,8 @@ export function notifyChange(key: string, before: Glance, after: Glance, pages: 
   const inFront = document.visibilityState === "visible" && document.hasFocus() && location.pathname === node;
   if (inFront) return;
   let body: string;
-  if (after.state === "waiting" && before.state !== "waiting") body = after.question ? `Waiting for you: ${after.question}` : "Waiting for you";
-  else if (before.state === "working" && after.state === "idle" && worked >= 4000) body = "Finished";
+  if (after.state === "waiting" && before.state !== "waiting") body = after.question ? t("notify.waitingFor", { question: after.question }) : t("notify.waiting");
+  else if (before.state === "working" && after.state === "idle" && worked >= 4000) body = t("notify.finished");
   else return;
   const page = pages?.find((p) => p.path === node);
   const title = page && page.agents.length === 1 ? page.title : `${page?.title ?? node} · ${agent}`;

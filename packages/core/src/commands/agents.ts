@@ -185,8 +185,9 @@ export const askUserCommand: Command = {
     if ((secret || fields.length) && options.length) throw new Error("a form has fields, not options: --option for a choice, --field or --secret for values");
     if (secret && fields.length) throw new Error("--secret asks for one value; ask for the other fields with a separate ask-user --field");
     // The target is checked now (it exists, it is not tracked by git…): the agent hears what is wrong before anyone types.
-    const form: Form | undefined = secret
-      ? { fields: [{ name: into!, label: question }], secret: true, where: (await intoTarget(ctx, me, into!)).where }
+    const target = secret ? await intoTarget(ctx, me, into!) : null;
+    const form: Form | undefined = target
+      ? { fields: [{ name: into!, label: question }], secret: true, where: target.where, whereSay: target.whereSay }
       : fields.length ? { fields: fields.map((f) => ({ name: f, label: f })) } : undefined;
     if (unattended(me)) return { stderr: NOBODY, exit: 1 };
     const open = letters(ctx.root).some((l) => l.kind === "question" && l.node === me.node && l.agent === me.agent && l.line === line);

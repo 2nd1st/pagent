@@ -62,8 +62,10 @@ describe("nodes, read and compiled once", () => {
 
   test("a new node is there at once", async () => {
     mkdirSync(join(app.root, "fresh"));
-    writeFileSync(join(app.root, "fresh/page.tsx"), `export const metadata = { title: "Fresh" };\nexport default function Fresh() { return <p>fresh</p>; }\n`);
-    const pages = await app.get<{ pages: { path: string; title: string }[] }>("/_pagent/pages");
+    writeFileSync(join(app.root, "fresh/page.tsx"), `export const metadata = { title: "Fresh", lang: "zh-CN" };\nexport default function Fresh() { return <p>fresh</p>; }\n`);
+    const pages = await app.get<{ pages: { path: string; title: string; lang?: string }[] }>("/_pagent/pages");
     assert.equal(pages.pages.find((p) => p.path === "/fresh")?.title, "Fresh");
+    assert.equal(pages.pages.find((p) => p.path === "/fresh")?.lang, "zh-CN"); // the shell's words follow the home page's
+    assert.equal(pages.pages.find((p) => p.path === "/")?.lang, undefined);
   });
 });

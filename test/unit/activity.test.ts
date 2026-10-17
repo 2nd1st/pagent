@@ -4,7 +4,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { quietNote } from "../../packages/bridge/src/agent-ui.tsx";
-import { subagentDoing, toolActivity, toolDoing } from "../../packages/core/src/agents/status.ts";
+import { subagentDoing as doingOfSubagent, toolActivity, toolDoing as doingOfTool, type Activity } from "../../packages/core/src/agents/status.ts";
+
+// What it is doing, as people read it in English; the same words for other languages (`say`): i18n.test.ts.
+const plain = ({ say: _, ...a }: Activity) => a;
+const toolDoing = (c: Parameters<typeof doingOfTool>[0]) => plain(doingOfTool(c));
+const subagentDoing = (...a: Parameters<typeof doingOfSubagent>) => plain(doingOfSubagent(...a));
 
 test("a tool call: a label people read, the tool and its argument apart", () => {
   assert.deepEqual(toolDoing({ toolName: "Bash", input: { command: "git status" } }), { label: "Running a command", tool: "Bash", detail: "git status" });

@@ -54,6 +54,9 @@ apps.bridges = bridges;
 const created = join(scratch, "created");
 execFileSync(process.execPath, [join(repo, "packages/create-pagent/index.js"), created], { stdio: "ignore" });
 apps["create-pagent"] = created;
+const createdZh = join(scratch, "created-zh");
+execFileSync(process.execPath, [join(repo, "packages/create-pagent/index.js"), createdZh, "--lang", "zh-CN"], { stdio: "ignore" });
+apps["create-pagent --lang zh-CN"] = createdZh;
 
 let failed = 0;
 let compiled = 0;

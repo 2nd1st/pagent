@@ -31,8 +31,11 @@ export function clientInfo(info: NodeInfo): ClientNodeInfo {
   };
 }
 
-/** A page as navigation shows it. titled: false when the title is only the folder's name. */
-export type PageEntry = { path: string; title: string; titled: boolean; agents: string[]; order?: number };
+/**
+ * A page as navigation shows it. titled: false when the title is only the folder's name. lang: the language it says it
+ * is in (metadata.lang); the home page's is the app's.
+ */
+export type PageEntry = { path: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string };
 
 /** A page without metadata.title: its folder's name ("meal-plan" → "Meal plan"); the root is "Home". */
 export function fallbackTitle(path: string): string {
@@ -123,7 +126,8 @@ export class Nodes {
       const decl = await this.declarations(path).catch(() => null);
       const own = decl?.manifest.title;
       const order = decl?.manifest.order;
-      out.push({ path, title: own ?? fallbackTitle(path), titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}) });
+      const lang = decl?.manifest.lang;
+      out.push({ path, title: own ?? fallbackTitle(path), titled: !!own, agents: decl?.manifest.agents.map((a) => a.name) ?? [], ...(order !== undefined ? { order } : {}), ...(lang ? { lang } : {}) });
     }
     return out;
   }

@@ -353,7 +353,8 @@ export function startServer(opts: ServerOptions) {
           const detail = typeof input.command === "string" ? input.command : typeof input.file_path === "string" ? input.file_path : JSON.stringify(input, null, 2);
           const gone = new AbortController();
           res.on("close", () => res.writableEnded || gone.abort());
-          const r = await askOrDecline(ref, () => askUser(ref, `Allow ${body.tool_name ?? "this tool"}?`, ["Allow", "Deny"], { kind: "permission", detail, signal: gone.signal }));
+          const say = { question: body.tool_name ? { key: "ask.allow", values: { tool: body.tool_name } } : { key: "ask.allowThisTool" }, options: [{ key: "ask.allowYes" }, { key: "ask.deny" }] };
+          const r = await askOrDecline(ref, () => askUser(ref, `Allow ${body.tool_name ?? "this tool"}?`, ["Allow", "Deny"], { kind: "permission", detail, say, signal: gone.signal }));
           if (gone.signal.aborted) return;
           if (r.declined) return decide("deny", r.answer);
           return /^allow/i.test(r.answer) ? decide("allow") : decide("deny", `The user declined${r.answer && !/^deny$/i.test(r.answer) ? `: ${r.answer}` : ""}.`);
