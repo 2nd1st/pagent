@@ -21,6 +21,7 @@ is everything that changed.
 | String actions, `export const actions = { status: "incus list" }` | An action is only an exported **async** function of a `"use server"` file in the node folder; to run a command, run it from the function (`execFile`) |
 | `useAction("status")` in a page | `import { status } from "./actions"` (or `"~/other-node/actions"`), then `await status(input)`, typed as written |
 | An action's failure as stderr text | The page's promise rejects with an `Error` of the message the function threw; the stack stays on the server (`pagent run` shows it to agents) |
+| An action called without an argument (a trigger, a bare `pagent run`, `list()` in a page or in another node's code) got `null` | It gets `undefined`, so a default value applies: `list({ q }: { q?: string } = {})`. Code that checks `input === null` no longer sees it; read it as `input?.q` or `input ?? {}` |
 | Agent `kind: …`, `session: "…"` | Errors: `kind` is gone (every agent is the same kind of thing), the session to adopt is `sessionId` |
 | `allow: ["run /wechat", "app read …", "mcp__app__…"]` | Errors: `allow` holds only the harness's own permission rules (`"WebFetch"`, `"Bash(curl:*)"`); `pagent` commands are pre-approved |
 | Messages to agents with `(from …)` built into the text | Every message carries a structured caller (`user`, `page`, `agent`, `trigger`, `pagent`, `external`, with the `via` chain); the `(from …)` line is made from it |
