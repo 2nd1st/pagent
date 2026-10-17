@@ -109,7 +109,7 @@ async function keyCall<T>(body: Record<string, unknown>): Promise<T> {
 export type Instance = { path: string; url: string; params: Record<string, string | string[]>; createdBy?: string; createdAt: number };
 
 /**
- * The app's nodes, for server code that keeps a dynamic page's instances (a sidebar of sessions, SPEC 13.9):
+ * The app's nodes, for server code that works on a dynamic page's instances (SPEC 13.9; the person has the rail for it):
  *   await nodes.instances("/studio/[ws]/[id]")   → [{ path: "/studio/demo/fix-login", url, params: { ws: "demo", id: "fix-login" }, createdBy?, createdAt }, …]
  *   await nodes.move("/studio/demo/fix-login", "/studio/demo/fix-auth")   as `pagent mv`: with its data, state, sessions
  *   await nodes.remove("/studio/demo/fix-auth")   an instance's folder goes (refused while its agent is in a turn)

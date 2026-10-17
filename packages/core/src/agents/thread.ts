@@ -110,6 +110,7 @@ function sessionEvents(ctx: Ctx, live: Live, ok: () => void, fail: (e: Error) =>
         if (live.bound.some((b) => b.run.id === e.clientId)) return; // told again (a restarted server asked)
         const b = live.waiting.get(e.clientId) ?? adopt(ctx, live, e);
         live.waiting.delete(e.clientId);
+        if (e.id) b.run.historyId = String(e.id); // the thread's own id for the message (ids.ts)
         taken(b.run);
         b.push({ type: "start", messageMetadata: { turnId: e.turnId } });
         live.bound.push(b);
@@ -143,10 +144,13 @@ function sessionEvents(ctx: Ctx, live: Live, ok: () => void, fail: (e: Error) =>
   };
 }
 
-/** A message the app did not send (typed into the TUI), or one sent before this server started: a run of its own. */
+/**
+ * A message the app did not send (typed into the TUI), or one sent before this server started: a run of its own. One
+ * typed into the TUI is known by the thread's id for it, as its history has it.
+ */
 function adopt(ctx: Ctx, live: Live, e: any): Bound {
   const m = e.meta ?? {};
-  const { run, push } = newRun(live.ref, m.user ?? userMessage(e.text), m.caller ?? { kind: "user" }, m.unattended);
+  const { run, push } = newRun(live.ref, m.user ?? { ...userMessage(e.text), ...(e.id ? { id: String(e.id) } : {}) }, m.caller ?? { kind: "user" }, m.unattended);
   if (m.user && e.clientId) run.id = e.clientId;
   known.add(run.id);
   let resolve = (_: string) => {};

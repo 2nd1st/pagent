@@ -9,7 +9,7 @@ import { McpAppFrame } from "./McpAppFrame.tsx";
 import { TerminalView } from "./TerminalView.tsx";
 import { BridgeNodeFrame, LoaderContext, NodeFrame } from "./NodeFrame.tsx";
 import { go } from "./nav.ts";
-import { Crumbs, notifyChange, Rail, useDocumentTitle, useNotifySetting, usePages, useStatuses, type Page } from "./Nav.tsx";
+import { Crumbs, notifyChange, Rail, readable, useDocumentTitle, useNotifySetting, usePages, useStatuses, type Page } from "./Nav.tsx";
 
 type RouteEntry = { path: string; file: "page" | "layout" };
 
@@ -29,7 +29,7 @@ document.documentElement.lang = chosenLanguage() ?? stored ?? READER;
 /**
  * The app's language, from its pages (null: it declares none), said to the engine's words and remembered here; and the
  * page's, said to the browser (<html lang>: fonts, line breaking, quotes): the reader's choice, else the one the page
- * at `path` says it is in, else the app's, else the reader's browser's.
+ * at `path` (as people read it) says it is in, else the app's, else the reader's browser's.
  */
 function useAppLanguage(pages: Page[] | null, path: string) {
   const lang = pages ? (pages.find((p) => p.path === "/")?.lang ?? null) : undefined;
@@ -41,7 +41,7 @@ function useAppLanguage(pages: Page[] | null, path: string) {
       else localStorage.removeItem(LANG_KEY);
     } catch {}
   }, [lang]);
-  const page = pages ? (pages.find((p) => p.path === path)?.lang ?? lang) : undefined;
+  const page = pages ? (pages.find((p) => p.url === path)?.lang ?? lang) : undefined;
   const tag = useLanguage(); // renders again when the reader picks one
   useEffect(() => {
     if (page !== undefined) document.documentElement.lang = chosenLanguage() ?? page ?? READER;
@@ -212,8 +212,10 @@ export function App() {
     provideHost(h);
     return h;
   }, []);
-  const pages = usePages();
-  useAppLanguage(pages, path);
+  const nav = usePages();
+  const pages = nav?.pages ?? null;
+  const here = readable(path); // as pages' urls have it (/demo/修登录)
+  useAppLanguage(pages, here);
   const route = useRoute(path);
   // For the pages' useParams (and a layout's: the page's under it). Kept until the next route is known.
   const params = route && route !== "missing" ? route.params : null;
@@ -222,11 +224,12 @@ export function App() {
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
   const statuses = useStatuses(pages, (key, before, after) => notifyChange(key, before, after, pagesRef.current));
-  useDocumentTitle(path, pages);
+  useDocumentTitle(here, pages);
   const [notify, toggleNotify] = useNotifySetting();
   const [railOpen, narrow, setRail] = useRail();
-  // One page: nothing to move between, so no rail (a new app's home, the bot, until the app grows).
-  const hasRail = (pages?.length ?? 0) > 1;
+  // One page: nothing to move between, so no rail (a new app's home, the bot, until the app grows); unless more can be
+  // made (a dynamic page: its "+" is in the rail).
+  const hasRail = (pages?.length ?? 0) > 1 || !!nav?.dynamic.length;
   const showRail = hasRail && railOpen;
   const states = [...statuses.values()].map((g) => g.state);
   const busiest = states.includes("waiting") ? "waiting" : states.includes("working") ? "working" : null;
@@ -235,7 +238,7 @@ export function App() {
     <HostContext.Provider value={host}>
       <LoaderContext.Provider value={httpLoader}>
         <div className="pagent-app" data-rail={showRail ? (narrow ? "over" : "open") : "closed"}>
-          {showRail && <Rail pages={pages!} statuses={statuses} current={path} onPick={narrow ? () => setRail(false) : undefined} />}
+          {showRail && <Rail nav={nav!} statuses={statuses} current={here} onPick={narrow ? () => setRail(false) : undefined} />}
           {showRail && narrow && <div className="pagent-scrim" onClick={() => setRail(false)} />}
           <div className="pagent-content">
             <header className="pagent-top" data-pagent-chrome>
@@ -251,7 +254,7 @@ export function App() {
                   <Icon d={BACK_ICON} />
                 </button>
               )}
-              <Crumbs path={path} pages={pages} />
+              <Crumbs path={here} pages={pages} />
               <span className="pagent-spacer" />
               {notify !== "unsupported" && (
                 <button

@@ -11,7 +11,7 @@ import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { ASSET_LOADERS, DEP_PROBE as PROBE, hostModules, isBare, isDepFile, styleModule } from "./compile.ts";
 import { encode, encodingFor } from "./encoding.ts";
 import { isServerFile } from "./extract.ts";
-import { codeDir, hasFile, listNodes } from "./tree.ts";
+import { codeFile, codeFiles, listNodes, nodeDir, sourceDirs } from "./tree.ts";
 
 const LOCKFILES = new Set(["package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]);
 const TYPES: Record<string, string> = { ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".ttf": "font/ttf" };
@@ -27,9 +27,16 @@ async function depFile(b: PluginBuild, spec: string, resolveDir: string): Promis
 
 /** The package imports of the app's node code (pages, layouts, their files, hooks they import), without bundling it. */
 async function scan(root: string): Promise<Set<string>> {
-  // A dynamic page's code once, however many instances it has.
-  const dirs = [...new Set(listNodes(root).map((p) => codeDir(root, p)))];
-  const entries = dirs.flatMap((d) => (["layout", "page"] as const).filter((f) => hasFile(d, f)).map((f) => join(d, `${f}.tsx`)));
+  // A dynamic page's code once, however many instances it has; and the code an instance has of its own (its files that
+  // shadow its source's, which may import packages its source does not).
+  const entries = [
+    ...new Set(
+      listNodes(root).flatMap((p) => [
+        ...(["layout", "page"] as const).flatMap((f) => codeFile(root, p, `${f}.tsx`) ?? []),
+        ...(sourceDirs(root, p).length > 1 ? codeFiles(nodeDir(root, p)).filter((f) => /\.(tsx|ts|jsx|js|mjs)$/.test(f)).map((f) => join(nodeDir(root, p), f)) : []),
+      ]),
+    ),
+  ];
   const found = new Set<string>();
   if (!entries.length) return found;
   const plugin: Plugin = {

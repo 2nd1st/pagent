@@ -77,9 +77,11 @@ export type Extracted = {
    * module that runs it: the function and only what it uses of its file (agentsModule).
    */
   agentsFn?: string;
+  /** The declarations the file makes (agents, triggers, tools, config, metadata): an instance's own copy inherits the rest (inherit). */
+  declares?: string[];
   errors: string[];
 };
-export type Manifest = Omit<Extracted, "errors">;
+export type Manifest = Omit<Extracted, "errors" | "declares">;
 
 type Edit = { pos: number; end?: number; text: string }; // insert at pos, or replace pos..end
 
@@ -405,7 +407,9 @@ export function analyze(
   const fn = agentsFunction(ast.program.body as Node[]);
   // Server code: the page gets none of it, nor what only it uses (serverOnly). The other edits inside it go (below).
   const gone: Edit[] = [];
+  const declares = new Set<string>();
   if (fn) {
+    declares.add("agents");
     const { module, leave } = serverOnly(code, ast.program.body as Node[], fn);
     result.agentsFn = module;
     if (fn.decl.type === "FunctionDeclaration") gone.push({ pos: fn.decl.start, end: fn.decl.end, text: "const agents = undefined;" });
@@ -442,6 +446,7 @@ export function analyze(
     if (stmt.type !== "ExportNamedDeclaration" || stmt.declaration?.type !== "VariableDeclaration") continue;
     for (const d of stmt.declaration.declarations as Node[]) {
       const which = d.id.name as string;
+      if (which === "metadata" || DECLARATIONS.has(which)) declares.add(which);
       if (which === "metadata") {
         let meta: unknown;
         try {
@@ -578,7 +583,37 @@ export function analyze(
     else result.errors.push(`${file}: ${named.join(" and ")} would be one instance on a disk that ignores case, as macOS's does (${folders.join(", ")}); give each a key that differs in more than case`);
   }
   if (gone.length) result.edits = [...result.edits.filter((e) => !gone.some((g) => e.pos >= g.pos && (e.end ?? e.pos) <= g.end!)), ...gone];
+  if (declares.size) result.declares = [...declares];
   return result;
+}
+
+/** What each declaration is, as Extracted has it. */
+const DECLARED: Record<string, (keyof Extracted)[]> = {
+  agents: ["agents", "agentsFn"],
+  triggers: ["triggers"],
+  tools: ["tools"],
+  config: ["config"],
+  metadata: ["title", "order", "lang", "fill"],
+};
+
+/**
+ * One file of an instance's code over the copies it shadows (SPEC 13.11): parts, that file's copies, its own first. The
+ * first is the file; each declaration it does not make comes from the nearest copy that does, so a page that changes
+ * only the UI keeps the shared page's agents, triggers, tools, metadata and config (`export const agents = {}` drops the
+ * agents). from: which part each declaration came from; errors: those of the parts it took any from.
+ */
+export function inherit<T extends Extracted>(parts: T[]): { part: T; from: Record<string, number> } {
+  const part = { ...parts[0], errors: [...parts[0].errors] };
+  const from: Record<string, number> = {};
+  for (const [name, fields] of Object.entries(DECLARED)) {
+    const i = parts.findIndex((p) => p.declares?.includes(name));
+    if (i < 0) continue;
+    from[name] = i;
+    if (i === 0) continue;
+    for (const f of fields) (part as Record<string, unknown>)[f] = parts[i][f];
+    for (const e of parts[i].errors) if (!part.errors.includes(e)) part.errors.push(e);
+  }
+  return { part, from };
 }
 
 export function applyEdits(code: string, edits: Edit[]): string {

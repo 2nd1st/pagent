@@ -182,8 +182,8 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 /* A page: dot, title, when it last talked; then what it is doing or waits on; then the last thing it said. The text
    lines start under the title, so the dots make one column to scan. */
 .pagent-railitem { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: var(--pagent-radius-sm); color: var(--pagent-text); text-decoration: none; transition: background-color 120ms var(--pagent-ease); }
-.pagent-railitem:hover { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); }
-.pagent-railitem[aria-current="page"] { background: color-mix(in srgb, var(--pagent-text) 8%, transparent); }
+.pagent-railitem:hover, .pagent-railhead:hover > .pagent-railitem { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); }
+.pagent-railhead > .pagent-railitem[aria-current="page"] { background: color-mix(in srgb, var(--pagent-text) 8%, transparent); }
 .pagent-railhome { min-height: 36px; justify-content: center; }
 .pagent-railhome .pagent-railtitle { font-weight: 600; }
 .pagent-railrow { display: flex; align-items: center; gap: 8px; min-width: 0; line-height: 20px; }
@@ -196,12 +196,33 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-railsaid { color: var(--pagent-muted); }
 .pagent-railsaid[data-asks] { color: var(--pagent-text); }
 .pagent-raillabel { padding: 14px 8px 4px; font-size: 12px; font-weight: 500; color: var(--pagent-faint); }
-/* A dynamic page's instances as one entry (the sessions of a workspace): opens to list them. */
-.pagent-railgroup { display: flex; flex-direction: column; gap: 1px; }
-.pagent-railgroup > button.pagent-railitem { width: 100%; border: 0; border-radius: var(--pagent-radius-sm); background: transparent; text-align: left; font: inherit; font-weight: 400; cursor: pointer; }
-.pagent-railgroup > button.pagent-railitem:hover { background: color-mix(in srgb, var(--pagent-text) 5%, transparent); }
-.pagent-railgroup > button.pagent-railitem[aria-current="page"] { background: color-mix(in srgb, var(--pagent-text) 8%, transparent); }
-.pagent-railgroup > button[aria-expanded="true"] .pagent-chevron { transform: rotate(90deg); }
+/* What can be done on a row: "+" (a new page under it) and "⋯" (an instance's rename and delete), at its top right,
+   where its time is, while it is hovered or focused; on a touch screen always, the time moved aside for them. */
+.pagent-railentry { display: flex; flex-direction: column; gap: 1px; }
+.pagent-railhead { position: relative; display: flex; flex-direction: column; }
+.pagent-railacts { position: absolute; top: 5px; right: 4px; display: none; gap: 2px; }
+.pagent-railhead:has(> .pagent-railhome) > .pagent-railacts { top: 7px; }
+.pagent-railhead:has(> .pagent-raillabel) > .pagent-railacts { top: 11px; }
+.pagent-railacts .pagent-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; }
+.pagent-railhead:is(:hover, :focus-within, [data-open]) > .pagent-railacts { display: flex; }
+.pagent-railhead[data-acts]:is(:hover, :focus-within, [data-open]) .pagent-railtime { display: none; }
+.pagent-railhead[data-acts]:is(:hover, :focus-within, [data-open]) .pagent-railrow { padding-right: var(--pagent-acts); }
+@media (hover: none) {
+  .pagent-railhead > .pagent-railacts { display: flex; }
+  .pagent-railhead[data-acts] .pagent-railrow, .pagent-railhead[data-acts] > .pagent-raillabel { padding-right: var(--pagent-acts); }
+  .pagent-railhead[data-acts]:is(:hover, :focus-within, [data-open]) .pagent-railtime { display: inline; }
+}
+.pagent-railmenu {
+  position: absolute; top: 30px; right: 4px; z-index: 5; min-width: 128px;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--pagent-surface); border: 1px solid var(--pagent-border); border-radius: var(--pagent-radius-sm); box-shadow: var(--pagent-shadow);
+}
+.pagent-railmenu button { border: 0; background: transparent; text-align: left; font-weight: 400; padding: 5px 8px; border-radius: 4px; }
+.pagent-railmenu button[data-danger] { color: var(--pagent-danger); }
+/* A name being typed: a new page under a row, or a page's new name. What went wrong stays under it. */
+.pagent-railname { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px 6px; }
+.pagent-railname input { width: 100%; min-width: 0; padding: 3px 8px; font-size: 13px; line-height: 20px; }
+.pagent-railerror { display: block; padding-right: 8px; font-size: 12px; line-height: 16px; color: var(--pagent-danger); overflow-wrap: anywhere; }
 
 /* An agent's status, the same everywhere (rail, console, chat, fab): working breathes, waiting for the user stands out,
    said something new is filled, idle is a quiet ring. A page without agents keeps the dot's room, so titles line up. */

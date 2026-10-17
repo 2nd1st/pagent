@@ -6,7 +6,7 @@ import type { UIMessage } from "ai";
 import { broadcast } from "../events.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { attachmentsOf } from "./attachments.ts";
-import { parseLine } from "../caller.ts";
+import { appIds, said } from "./ids.ts";
 import { callerOf } from "./prompt.ts";
 import { driverOf } from "./driver.ts";
 import { declOf, invoke, runnerBase, runnerScript } from "./runner.ts";
@@ -113,8 +113,9 @@ export function forget(ref: AgentRef) {
 }
 
 /**
- * The agent's conversation, projected from its native transcript. `after`: only from that message on (it included,
- * since the last message may have grown), when it is still there; otherwise all of it.
+ * The agent's conversation, projected from its native transcript, each turn's message under the app's id for it
+ * (ids.ts). `after`: only from that message on (it included, since the last message may have grown), when it is still
+ * there; otherwise all of it.
  */
 export async function history(ctx: Ctx, ref: AgentRef, after?: string): Promise<UIMessage[]> {
   const key = keyOf(ref);
@@ -133,14 +134,10 @@ export async function history(ctx: Ctx, ref: AgentRef, after?: string): Promise<
       historyCache.set(key, { files, stamp: stampsOf(files), messages });
     }
   }
+  messages = appIds(ctx, ref, messages);
   const from = after ? messages.findIndex((m) => m.id === after) : -1;
   return from >= 0 ? messages.slice(from) : messages;
 }
-
-const said = (m: UIMessage) => {
-  const text = m.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
-  return (parseLine(text)?.message ?? text).trim();
-};
 
 /**
  * The history as a view that is about to attach to the agent's run should have it: up to the run's message, as the

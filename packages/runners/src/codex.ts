@@ -12,8 +12,9 @@
 //     Further stdin lines are commands: {op:"ask", run, message, meta} (turn/start; during a turn, Codex steers it
 //     with the message), {op:"interrupt"} (turn/interrupt: stop the turn in progress), {op:"state"} (tell it all
 //     again, for a restarted server), {op:"stop"}.
-//     stdout: {type:"ready", threadId}; per turn {type:"turn", turnId}, {type:"user", text, clientId, meta} for each
-//     message in it (whoever sent it: the app, the TUI), UIMessageChunks, {type:"turn-end", turnId, status, text}.
+//     stdout: {type:"ready", threadId}; per turn {type:"turn", turnId}, {type:"user", id, text, clientId, meta} for each
+//     message in it (whoever sent it: the app, the TUI; id: its item's, what the history has it under), UIMessageChunks,
+//     {type:"turn-end", turnId, status, text}.
 //   { op: "history", cwd, stateDir, thread? } → {type:"history", messages: UIMessage[]} (thread/turns/list)
 //   { op: "interactive", thread } → {type:"command", command, args, cwd}: the TUI, attached to the thread
 //   { op: "info", cwd, stateDir } → {type:"info", sessionId, resume}

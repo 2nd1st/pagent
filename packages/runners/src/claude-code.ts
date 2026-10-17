@@ -4,7 +4,8 @@
 //
 // Contract: one JSON object on stdin, JSONL on stdout.
 //   { op: "ask", message, cwd, stateDir, env, agentSocket, permissionUrl, pluginDirs, skills?, mcps?, systemPrompt, options, appRoot? }
-//     → AI SDK UIMessageChunk lines; metadata as transient data chunks (data-session, data-result)
+//     → AI SDK UIMessageChunk lines; metadata as transient data chunks (data-session, data-result; data-user: the id the
+//     transcript keeps the turn's message under, which the history shows it under: core agents/ids.ts)
 //   { op: "history", cwd, stateDir } → {type:"history", messages: UIMessage[], file, watch}: watch, the sub-agents' transcripts
 //     it read too (lib/claude-subagents.ts; a sub-agent's call is followed by its data-subagent parts, lib/subagents.ts)
 //   { op: "last", cwd, stateDir } → {type:"last", text, at, lastAt, title, file}: its last reply's text, from the transcript's
@@ -12,8 +13,9 @@
 //   { op: "interactive", …same as ask, fork? } → {type:"command", command, args, cwd, trust, keys}: the native TUI on the
 //     same session; the dialog it may put up first (trust) and the keys that stop a turn or answer a prompt in it
 //   { op: "holder", cwd, stateDir } → {type:"holder", holder, choices}: another process that has the session open
-//   { op: "follow", …same as history } → {type:"mark"}, then the chunks of the next turn the TUI writes to the transcript;
-//     {type:"taken", text} when a message typed during it is taken in (that turn, or the next, which is followed too)
+//   { op: "follow", …same as history } → {type:"mark"}, then the chunks of the next turn the TUI writes to the transcript
+//     (data-user for its message, as ask); {type:"taken", text, id?} when a message typed during it is taken in (that
+//     turn, or the next, which is followed too; id: its entry's, when it starts the next)
 //   { op: "usage", cwd, stateDir } → {type:"usage", usage, file}: the session's token use (lib/usage.ts); a turn (ask,
 //     follow) ends with the same as a data-usage chunk
 //   { op: "stranger", message, systemPrompt, maxOutputTokens, options } → the chunks of a one-off answer to a stranger
@@ -73,7 +75,7 @@ const out = (
     | { type: "holder"; holder: Holder | null; choices: ("fork" | "open")[] }
     | { type: "mark" }
     | { type: "usage"; usage: SessionUsage | null; file: string | null }
-    | { type: "taken"; text: string }
+    | { type: "taken"; text: string; id?: string }
     | { type: "moved"; sessions: number }
     | { type: "describe"; turns: "tui"; outerSession: { marker: string; prefix: string; keep: string[] }; strangers: true },
 ) =>
@@ -358,7 +360,7 @@ async function askOp(input: Input) {
   let stderr = "";
   child.stderr.on("data", (c) => (stderr += c));
 
-  const t = new Translator(pinned(input) ? input.stateDir : null, input.cwd, input.stateDir);
+  const t = new Translator(pinned(input) ? input.stateDir : null, input.cwd, input.stateDir, input.message ?? "");
   // Sub-agents write their own transcripts (stream-json has their tool calls, not their text): followed from there.
   const polling = setInterval(() => t.poll(), 250);
   let buf = "";
@@ -470,10 +472,12 @@ class Translator {
   private subagents = new SubagentWatcher(out);
   private said = new StreamSaid(); // the context window and rate limits stream-json tells (lib/claude-usage.ts)
   private usageDir: string;
-  constructor(stateDir: string | null, cwd: string, usageDir: string) {
+  private message: string; // the turn's, to find in the transcript at its end
+  constructor(stateDir: string | null, cwd: string, usageDir: string, message: string) {
     this.stateDir = stateDir;
     this.cwd = cwd;
     this.usageDir = usageDir;
+    this.message = message;
   }
 
   /** The turn's sub-agents: what they wrote since the last poll (their transcripts are next to the session's). */
@@ -525,7 +529,11 @@ class Translator {
       if (m.session_id && this.stateDir) saveSession(this.stateDir, m.session_id);
       this.said.result(m);
       this.said.keep(this.usageDir);
-      sendUsage(this.transcript ?? (this.sessionId ? findTranscript(this.cwd, this.sessionId) : null), this.usageDir);
+      const file = this.transcript ?? (this.sessionId ? findTranscript(this.cwd, this.sessionId) : null);
+      sendUsage(file, this.usageDir);
+      // The turn's message as the transcript keeps it (stream-json does not echo it): what the history shows it under.
+      const id = file && promptOf(file, this.message);
+      if (id) out({ type: "data-user", data: { id }, transient: true });
       out({ type: "data-result", data: { text: m.result ?? "", isError: !!m.is_error }, transient: true });
       if (m.is_error) out({ type: "error", errorText: String(m.result ?? "error") });
       out({ type: "finish" });
@@ -577,6 +585,45 @@ function toolResultText(content: unknown): string {
 
 // ---------------------------------------------------------------- history
 
+/** A long message pasted into the TUI (how the app types into it) is stored wrapped. */
+const unpasted = (text: string) => text.replace(/^\s*<pasted_content id="[^"]*">\n?([\s\S]*?)\n?<\/pasted_content id="[^"]*">\s*$/, "$1");
+
+/**
+ * What a transcript entry says when it is a message to the agent that starts or joins a turn (a person's, the app's, a
+ * slash command), as the history shows it; null for anything else (a tool's result, a note of Claude Code's, a
+ * sub-agent's, a compaction's summary, a background task's notification).
+ */
+function promptText(e: any): string | null {
+  if (e.type !== "user" || e.isMeta || e.isSidechain || e.isCompactSummary) return null;
+  const content = e.message?.content;
+  const blocks: any[] = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
+  if (blocks.some((b) => b.type === "tool_result")) return null;
+  const text = unpasted(blocks.filter((b) => b.type === "text").map((b) => b.text).join(""));
+  if (!text.trim() || /^\s*<(local-command-|task-notification>)/.test(text)) return null;
+  return text;
+}
+
+/**
+ * The id the transcript keeps a turn's message under (its entry's uuid), found from its end by the message's words: so
+ * the app can show the turn under its own id for it (core: agents/ids.ts). null: not there.
+ */
+function promptOf(file: string, message: string): string | null {
+  const want = message.trim();
+  for (let bytes = 256 * 1024; ; bytes *= 8) {
+    const { lines, whole } = tailLines(file, bytes);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let e: any;
+      try {
+        e = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      if (e.uuid && promptText(e)?.trim() === want) return e.uuid;
+    }
+    if (whole || bytes >= 16 * 1024 * 1024) return null;
+  }
+}
+
 /** Project the native transcript into UIMessages. Read-only; Claude Code's jsonl stays the truth. */
 function historyOp(input: Input) {
   const sessionId = currentSession(input);
@@ -618,9 +665,7 @@ function historyOp(input: Input) {
         if (r.is_error) Object.assign(p, { state: "output-error", errorText: toolResultText(r.content) });
         else Object.assign(p, { state: "output-available", output: toolResultText(r.content) });
       }
-      let text = blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join("");
-      // A long message pasted into the TUI (how the app types into it) is stored wrapped.
-      text = text.replace(/^\s*<pasted_content id="[^"]*">\n?([\s\S]*?)\n?<\/pasted_content id="[^"]*">\s*$/, "$1");
+      let text = unpasted(blocks.filter((b: any) => b.type === "text").map((b: any) => b.text).join(""));
       if (!text.trim() || results.length) continue;
       // The summary the session goes on from after its context was compacted: Claude Code writes it as a user message
       // ("This session is being continued from a previous conversation…"), but nobody typed it.
@@ -916,6 +961,7 @@ class TranscriptTranslator {
   private lastText: string[] = []; // the text written since the last tool call: the turn's answer
   private queued: string[] = []; // messages typed during the turn, not taken in yet
   private next: string[] = []; // taken off the queue to start the next turn
+  private prompted = false; // the turn's own message is in (the first one after the mark)
   /** The turn's sub-agents, followed in their own transcripts (the session's has their calls and results). */
   readonly subagents = new SubagentWatcher(out);
 
@@ -953,16 +999,20 @@ class TranscriptTranslator {
       }
     } else if (m.type === "queue-operation") {
       this.queue(m);
+    } else if (m.type === "user" && !this.prompted && !this.next.length && m.uuid && promptText(m) !== null) {
+      // The message typed for this turn: the transcript's id for it (what the history shows it under).
+      this.prompted = true;
+      out({ type: "data-user", data: { id: m.uuid }, transient: true });
     } else if (m.type === "user" && typeof m.message?.content === "string") {
       const note = notification(m.message.content);
       if (note) this.subagents.end(note.toolUseId, note.outcome);
-      else if (this.next.length) out({ type: "taken", text: this.next.shift()! });
+      else if (this.next.length) out({ type: "taken", text: this.next.shift()!, ...(m.uuid ? { id: m.uuid } : {}) });
     } else if (m.type === "user" && Array.isArray(m.message?.content)) {
       for (const b of m.message.content) {
         if (b.type === "text") {
           const note = notification(b.text ?? "");
           if (note) this.subagents.end(note.toolUseId, note.outcome);
-          else if (this.next.length && !m.message.content.some((x: any) => x.type === "tool_result")) out({ type: "taken", text: this.next.shift()! });
+          else if (this.next.length && !m.message.content.some((x: any) => x.type === "tool_result")) out({ type: "taken", text: this.next.shift()!, ...(m.uuid ? { id: m.uuid } : {}) });
         }
         if (b.type !== "tool_result") continue;
         const ended = outcomeOfResult(m.toolUseResult);

@@ -5,10 +5,11 @@ import { ScopeContext, type AgentRef, type Scope } from "@pagent/bridge";
 import { t, tWith, useLanguage } from "@pagent/bridge/i18n";
 
 export type NodeLoader = {
-  node(path: string, from?: string): Promise<NodeInfo>;
+  /** again: not the first look (the code changed): an instance moved or removed meanwhile is not made again. */
+  node(path: string, from?: string, again?: boolean): Promise<NodeInfo>;
   module(path: string, file: "page" | "layout", version: string): Promise<{ default: ComponentType<any> }>;
-  /** Call `cb` when the node's code may have changed or everything should reload. */
-  onChange(path: string, cb: () => void): () => void;
+  /** Call `cb` when the node's code may have changed (its own, or that of the nodes it falls through to) or everything should reload. */
+  onChange(path: string, cb: () => void, sources?: string[]): () => void;
 };
 export const LoaderContext = createContext<NodeLoader | null>(null);
 
@@ -21,6 +22,8 @@ export type NodeInfo = {
   notes?: string[];
   /** An instance of a dynamic page: the values of its [segments], which its page and layout get as `params`. */
   params?: Record<string, string | string[]>;
+  /** An instance: the nodes whose code its own falls through to (a change there changes it too: SPEC 13.11). */
+  sources?: string[];
 };
 
 class Boundary extends Component<{ path: string; children: ReactNode }, { error: Error | null }> {
@@ -66,11 +69,12 @@ export function NodeFrame({
   const [mod, setMod] = useState<{ Comp: ComponentType<any>; version: string } | null>(null);
   const [tick, setTick] = useState(0);
 
-  // Manifest: refetch when this node's code changes.
+  // Manifest: refetch when this node's code changes. Only the first look opens the page (which makes an instance of a
+  // dynamic page): one it shows that is moved or removed meanwhile (the rail's rename, `pagent rm`) is not made again.
   useEffect(() => {
     let alive = true;
     loader
-      .node(path, from)
+      .node(path, from, tick > 0)
       .then((i) => alive && (setInfo(i), setError(null)))
       .catch((e) => alive && setError(String(e.message ?? e)));
     return () => {
@@ -78,7 +82,8 @@ export function NodeFrame({
     };
   }, [loader, path, from, tick]);
 
-  useEffect(() => loader.onChange(path, () => setTick((t) => t + 1)), [loader, path]);
+  const sources = info?.sources?.join("\n") ?? "";
+  useEffect(() => loader.onChange(path, () => setTick((t) => t + 1), sources ? sources.split("\n") : []), [loader, path, sources]);
 
   // Module: re-import whenever the compiled version changes.
   useEffect(() => {
