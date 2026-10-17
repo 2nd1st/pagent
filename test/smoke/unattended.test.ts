@@ -24,7 +24,7 @@ describe("runs a trigger started, delegated", () => {
   const busy = async (node: string) => (await app.get(`/_pagent/agent-status?node=${node}&agent=${node.slice(1)}`)).busy;
   /** b's permission hook (Claude Code's PermissionRequest), asking now: what it decides. */
   const permission = (signal: AbortSignal) =>
-    fetch(`${app.url}/_pagent/permission?node=/b&agent=b`, { method: "POST", body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "make" } }), signal })
+    fetch(`${app.url}/_pagent/permission?node=/b&agent=b`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "make" } }), signal })
       .then((r) => r.json())
       .then((r) => r.hookSpecificOutput?.decision);
   before(async () => {
