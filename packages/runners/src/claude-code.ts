@@ -192,14 +192,17 @@ function appRules(input: Input): { deny: string[]; ask: string[] } {
 
 /**
  * A Read or Edit rule's path as the root's agent reads it: "/x", "./x" and "x" are below the root (a name alone, as in
- * .gitignore, at any depth), not below the folder the agent starts in. So it is made absolute ("//<root>/x"); one
- * already absolute ("//x", "~/x") stays, and so does every rule when the root cannot be spelled in a pattern.
+ * .gitignore, at any depth), not below the folder the agent starts in. So it is made absolute ("//<root>/x"), the
+ * root's own wildcards and backslashes escaped as .gitignore does ("\*"), so it means that folder and no other. One
+ * already absolute ("//x", "~/x") stays. Never left relative: in --settings, "/x" is below wherever Claude Code keeps
+ * those settings, not the app.
  */
 function rootPath(rule: string, root: string): string {
   const [, tool, path] = /^(Read|Edit)\((.+)\)$/.exec(rule) ?? [];
-  if (!path || path.startsWith("//") || path.startsWith("~/") || /[*?[\]\\]/.test(root)) return rule;
+  if (!path || path.startsWith("//") || path.startsWith("~/")) return rule;
   const p = path.replace(/^\.\//, "");
-  return `${tool}(/${root}${p.startsWith("/") ? p : /\/./.test(p) ? `/${p}` : `/**/${p}`})`;
+  const literal = root.replace(/[*?[\]\\]/g, "\\$&");
+  return `${tool}(/${literal}${p.startsWith("/") ? p : /\/./.test(p) ? `/${p}` : `/**/${p}`})`;
 }
 
 const STATUSLINE = join(dirname(fileURLToPath(import.meta.url)), "lib", "statusline.ts");
