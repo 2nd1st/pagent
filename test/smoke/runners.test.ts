@@ -153,6 +153,24 @@ describe("claude-code: the agent's session is the one its TUI is on", () => {
   });
 });
 
+test("claude-code: a live process holds its session in any locale (the registry has its start time in the C one)", () => {
+  // Claude Code records procStart as `ps -o lstart` prints it in UTC and the C locale ("Sat Oct 17 …"); in en_AU ps
+  // prints the day first ("Sat 17 Oct …"), and a live process read that way would look like a reused pid. This test
+  // process stands in for the one on the session.
+  const dir = mkdtempSync(join(tmpdir(), "pagent-locale-"));
+  const config = join(dir, "config");
+  try {
+    mkdirSync(join(config, "sessions"), { recursive: true });
+    const procStart = execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, TZ: "UTC", LC_ALL: "C" }, encoding: "utf8" });
+    writeFileSync(join(config, "sessions", `${process.pid}.json`), JSON.stringify({ pid: process.pid, sessionId: "open", cwd: dir, kind: "interactive", procStart }));
+    // An empty LC_ALL is no LC_ALL: the user's LANG and LC_TIME decide.
+    const env = { CLAUDE_CONFIG_DIR: config, LC_ALL: "", LANG: "en_AU.UTF-8", LC_TIME: "en_AU.UTF-8" };
+    assert.equal(opOf("claude-code", { op: "holder", cwd: dir, stateDir: join(dir, "state"), seedSession: "open" }, env)[0].holder?.pid, process.pid);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("claude-code: the last words and the session's title (its latest ai-title, or the name the user gave it), from the transcript's end", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-last-"));
   const cwd = join(dir, "work");
