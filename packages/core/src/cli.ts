@@ -10,6 +10,10 @@ import { flagValue, parse } from "./commands/args.ts";
 const [command, arg, ...rest] = process.argv.slice(2);
 const env = (k: string) => process.env[`PAGENT_${k}`] ?? "";
 
+// A header carries Latin-1 only, and a node's path or an agent's name may be in any script (/工作): such a value goes
+// percent-encoded (server.ts decodes it). A plain one goes as it is, which a server from before this reads too.
+const header = (v: string) => (/^[\x20-\x7e]*$/.test(v) && !v.includes("%") ? v : encodeURIComponent(v));
+
 /** An agent's command: to its app through the daemon's socket, as that agent. Prints what the app answers. */
 function agentCommand(argv: string[]) {
   const sock = env("SOCK");
@@ -22,7 +26,7 @@ function agentCommand(argv: string[]) {
       socketPath: sock,
       path: `/a/${env("APP")}/_cli`,
       method: "POST",
-      headers: { "content-type": "application/json", "x-pagent-node": env("NODE"), "x-pagent-agent": env("AGENT"), "x-pagent-token": env("TOKEN") },
+      headers: { "content-type": "application/json", "x-pagent-node": header(env("NODE")), "x-pagent-agent": header(env("AGENT")), "x-pagent-token": env("TOKEN") },
     },
     (res) => {
       let body = "";
