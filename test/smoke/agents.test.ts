@@ -121,3 +121,16 @@ describe("agents", () => {
     assert.deepEqual((await history(app, "/b")).slice(-1), ["assistant: part 1 of 3. part 2 of 3. part 3 of 3."]);
   });
 });
+
+describe("a node and an agent named in any script", () => {
+  let app: TestApp;
+  before(async () => {
+    app = await testApp({ "page.tsx": fakePage(), "工作/page.tsx": fakePage({ 助手: {} }) });
+  });
+  after(() => app.close());
+
+  test("its `pagent` commands reach the app as that agent", async () => {
+    assert.equal(JSON.parse(await ask(app, "/工作", "!sh pagent status", "助手")).path, "/工作");
+    assert.deepEqual(JSON.parse(await ask(app, "/工作", "!sh pagent agents", "助手")).map((a: { address: string }) => a.address), ["/#bot"]);
+  });
+});

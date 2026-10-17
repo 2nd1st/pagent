@@ -47,6 +47,15 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return raw ? JSON.parse(raw) : undefined;
 }
 
+/** A header's text, percent-encoded by cli.ts when it is not plain ASCII (a path may be /工作); a plain one reads as it is. */
+function headerText(v: string): string {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
+
 /** A response compressed as the browser accepts (compiled modules: small, so fast settings). */
 function sendEncoded(req: IncomingMessage, res: ServerResponse, headers: Record<string, string>, body: Buffer) {
   const encoding = encodingFor(String(req.headers["accept-encoding"] ?? ""), body.length);
@@ -354,7 +363,7 @@ export function startServer(opts: ServerOptions) {
         // may run one: its token (from its environment) must be that agent's.
         case "POST /_cli": {
           const { argv, cwd } = (await readBody(req)) as { argv?: string[]; cwd?: string };
-          const h = (k: string) => String(req.headers[`x-pagent-${k}`] ?? "");
+          const h = (k: string) => headerText(String(req.headers[`x-pagent-${k}`] ?? ""));
           const me = agentOf(ctx, h("node"), h("agent"), h("token"));
           if (!me) return json(res, 200, { stderr: "pagent: this shell is not an agent of this app (its PAGENT_NODE / PAGENT_AGENT / PAGENT_TOKEN are missing or wrong). Agents get them from the app; people use `pagent serve` and `pagent add`.", exit: 2 });
           const args = Array.isArray(argv) ? argv.map(String) : [];
