@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callerName } from "../../packages/core/src/caller.ts";
+import { appId } from "../../packages/core/src/daemon-protocol.ts";
 
 export const repo = fileURLToPath(new URL("../..", import.meta.url));
 export const fakeRunner = join(repo, "packages/runners/test/fake.ts");
@@ -37,6 +38,8 @@ export type TestApp = {
   root: string;
   home: string;
   url: string;
+  /** Where the app's agents reach it: the daemon's HTTP proxy, for this app (daemon.ts). */
+  proxy: string;
   log: () => string;
   start: () => Promise<void>;
   /** The server dies (SIGKILL, nothing saved on the way out) or stops (SIGTERM); the daemon and its agents go on. */
@@ -78,6 +81,7 @@ export async function testApp(files: Record<string, string>, opts: { env?: Recor
     root,
     home,
     url,
+    proxy: `http://127.0.0.1:${daemonPort}/a/${appId(root)}`,
     log: () => {
       try {
         return readFileSync(logFile, "utf8");

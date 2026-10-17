@@ -1,10 +1,13 @@
 // The app's routes (api/**/route.ts, SPEC 13) over HTTP with agents on the fake runner: typed and raw handlers, [id]
 // params, tell() from a route and from an action it calls, an agent's message route (none: closed; the one-line inbox;
 // one of the app's own, which the app's agents' `pagent tell` goes through too), replies to a sender outside, strangers,
-// and what other devices reach without the access token.
+// and what other devices reach without the access token, and with it.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
+import { appId } from "../../packages/core/src/daemon-protocol.ts";
 import { localAddresses } from "../../packages/core/src/remote.ts";
 import { fakePage, freePort, lines, testApp, until, type TestApp } from "../lib/app.ts";
 
@@ -208,6 +211,16 @@ describe("the app's public face on the network", () => {
     assert.equal(await at("/_pagent/pages"), 401);
     assert.equal(await at("/"), 401);
     assert.equal(await fetch(`${app.url}/_pagent/pages`).then((r) => r.status), 200); // this machine: no token
+  });
+
+  test("a device with the token drives the app from its pages; a page at another port of that address does not", { skip: !lan && "no LAN address" }, async () => {
+    const port = new URL(app.url).port;
+    const token = readFileSync(join(app.home, "state", appId(app.root), "remote-token"), "utf8").trim();
+    const stop = (origin: string, type = "application/json") =>
+      fetch(`http://${lan}:${port}/_pagent/stop`, { method: "POST", headers: { cookie: `pagent_token=${token}`, origin, "content-type": type }, body: JSON.stringify({ node: "/", agent: "bot" }) }).then((r) => r.status);
+    assert.equal(await stop(`http://${lan}:${port}`), 200);
+    assert.equal(await stop(`http://${lan}:${Number(port) + 1}`), 403);
+    assert.equal(await stop(`http://${lan}:${port}`, "text/plain"), 415);
   });
 });
 

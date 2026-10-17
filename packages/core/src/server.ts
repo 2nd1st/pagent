@@ -86,6 +86,19 @@ const allowedHosts = (env("ALLOWED_HOSTS") ?? "").split(",").map((h) => h.trim()
 let remoteOpen = false;
 const hostOk = (host: string) => LOOPBACK.test(host) || allowedHosts.includes(host.toLowerCase().replace(/:\d+$/, "")) || (remoteOpen && ownHost(host));
 
+// The app's public face: its routes and /mcp. Everything else is the user's own.
+const PUBLIC = /^\/(api|mcp)(\/|$)/;
+
+// A page that may drive the user's own plane is one of the app's own: its origin is the address the browser reached
+// this server at (the Host), whichever name that was: this server's own, the shell's dev server in front of it (vite
+// keeps the Host), this machine's name as another device opened it. Another port of localhost is another server (a
+// dev server, another pagent app), so the host name alone does not do. A name in PAGENT_ALLOWED_HOSTS is the user's
+// word (a proxy in front may rewrite the Host). The public face takes pages from any of this machine's names.
+function originOk(req: IncomingMessage, url: URL, origin: URL): boolean {
+  if (PUBLIC.test(url.pathname)) return hostOk(origin.host);
+  return origin.host === new URL(`${origin.protocol}//${req.headers.host}`).host || allowedHosts.includes(origin.hostname);
+}
+
 /** Why this request is refused, or null. */
 function refused(req: IncomingMessage, url: URL): string | null {
   if (!hostOk(req.headers.host ?? "")) return `unexpected Host ${req.headers.host}`;
@@ -93,7 +106,7 @@ function refused(req: IncomingMessage, url: URL): string | null {
   if (origin) {
     if (origin === "null") return "opaque origin";
     try {
-      return hostOk(new URL(origin).host) ? null : `cross-origin request from ${origin}`;
+      return originOk(req, url, new URL(origin)) ? null : `cross-origin request from ${origin}`;
     } catch {
       return `bad Origin ${origin}`;
     }
@@ -159,13 +172,18 @@ export function startServer(opts: ServerOptions) {
     // The app's public face (its routes, and /mcp: the same routes as MCP tools) answers anyone the Host and Origin
     // checks let through; the route decides from its caller. Everything else is the user's own: other devices need the
     // access token.
-    const open = /^\/(api|mcp)(\/|$)/.test(url.pathname);
+    const open = PUBLIC.test(url.pathname);
     const access = open ? "ok" : remote?.check(req, url);
     if (access === "refused") return json(res, 401, { error: "refused: open the URL with ?token=… that `pagent serve` printed" });
     if (access === "set") {
       url.searchParams.delete("token");
       res.writeHead(303, { "set-cookie": remote!.cookie, location: url.pathname + url.search });
       return void res.end();
+    }
+    // Every client of the user's own plane writes JSON. A page can send text/plain, a form or no body without asking
+    // first; JSON only after a CORS preflight, which this server never answers.
+    if (!open && (req.method === "POST" || req.method === "PUT") && !/^application\/json\s*(;|$)/i.test(req.headers["content-type"] ?? "")) {
+      return json(res, 415, { error: "refused: send JSON (content-type: application/json)" });
     }
     try {
       // The app's routes: api/**/route.ts (routes.ts).

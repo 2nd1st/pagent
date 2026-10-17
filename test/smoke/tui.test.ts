@@ -94,7 +94,7 @@ describe("an agent in its TUI", () => {
     // viewer, the hook leaves the prompt to the terminal, and a viewer's close reaches the server a moment after
     // ws.close() returns.)
     const hook = new AbortController();
-    void fetch(`${app.url}/_pagent/permission?node=/perm&agent=bot`, { method: "POST", body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "make" } }), signal: hook.signal }).catch(() => {});
+    void fetch(`${app.url}/_pagent/permission?node=/perm&agent=bot`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool_name: "Bash", tool_input: { command: "make" } }), signal: hook.signal }).catch(() => {});
     await card(); // the hook's, up first (as Claude Code's comes with its prompt)
     reply = ask("/perm", "!perm make");
     await until(async () => (await status("/perm")).terminal.state === "blocked", "the prompt");
