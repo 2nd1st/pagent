@@ -4,7 +4,8 @@
 // and what other devices reach without the access token, and with it.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createServer, type Server } from "node:http";
+import { createServer, request, type Server } from "node:http";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { appId } from "../../packages/core/src/daemon-protocol.ts";
@@ -198,7 +199,7 @@ describe("the app's public face on the network", () => {
   const lan = localAddresses()[0];
   let app: TestApp;
   before(async () => {
-    if (lan) app = await testApp({ "page.tsx": fakePage(), "api/hello/route.ts": `export async function GET() { return "hi"; }\n` }, { host: "0.0.0.0" });
+    app = await testApp({ "page.tsx": fakePage(), "api/hello/route.ts": `export async function GET() { return "hi"; }\n` }, { host: "0.0.0.0" });
   });
   after(() => app?.close());
 
@@ -221,6 +222,25 @@ describe("the app's public face on the network", () => {
     assert.equal(await stop(`http://${lan}:${port}`), 200);
     assert.equal(await stop(`http://${lan}:${Number(port) + 1}`), 403);
     assert.equal(await stop(`http://${lan}:${port}`, "text/plain"), 415);
+  });
+
+  test("this machine by a name not its own needs the token too: a page whose domain re-resolves to 127.0.0.1", async () => {
+    const port = new URL(app.url).port;
+    const token = readFileSync(join(app.home, "state", appId(app.root), "remote-token"), "utf8").trim();
+    // DNS rebinding: a stranger's page at <this machine's name>.<its domain> (the first label passes for this
+    // machine's own), its domain re-resolved to 127.0.0.1, so it reaches the server from this machine.
+    const host = `${hostname().toLowerCase().split(".")[0]}.rebind.example:${port}`;
+    const send = (path: string, headers: Record<string, string> = {}, method = "GET") =>
+      new Promise<number>((resolve, reject) => {
+        const req = request(`${app.url}${path}`, { method, headers: { host, origin: `http://${host}`, "content-type": "application/json", ...headers } }, (res) => (res.resume(), resolve(res.statusCode ?? 0)));
+        req.on("error", reject);
+        req.end(method === "POST" ? JSON.stringify({ node: "/", agent: "bot" }) : undefined);
+      });
+    assert.equal(await send("/_pagent/stop", {}, "POST"), 401);
+    assert.equal(await send("/_pagent/pages"), 401);
+    assert.equal(await send("/api/hello"), 200, "the public face, as for any device");
+    assert.equal(await send("/_pagent/stop", { cookie: `pagent_token=${token}` }, "POST"), 200, "with the token");
+    assert.equal(await fetch(`${app.url}/_pagent/pages`).then((r) => r.status), 200, "by 127.0.0.1: no token");
   });
 });
 
