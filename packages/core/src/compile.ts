@@ -4,7 +4,7 @@
 // a node (import { useCalculator } from "~/calculator") are that node's own code, run as that node. npm packages are
 // the app's shared dependency modules (deps.ts), imported by URL.
 import { build, type Plugin, type PluginBuild } from "esbuild";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { analyze, applyEdits, INSTALL_SOURCE, installSourceError, isServerFile, NODE_SOURCE, serverExports, serverStub } from "./extract.ts";
@@ -87,6 +87,38 @@ export function serverModule(root: string, source: string): { node: string; file
   return null;
 }
 
+/**
+ * Why `source` ("~/…") has no server functions to import, and what to write instead: only a "use server" file directly
+ * in a node's folder (.ts or .js) has an address; what is at this one is a node, or another file, or nothing.
+ */
+export function notServerModule(root: string, source: string): string {
+  let path: string;
+  try {
+    path = normPath(source.slice(1));
+  } catch {
+    return `"${source}" is no address of this app`;
+  }
+  const at = (ext: string) => join(root, path.slice(1) + ext);
+  const isFile = (f: string) => existsSync(f) && statSync(f).isFile();
+  if (isNode(root, path)) {
+    // A node with the name of a "use server" file beside it (/tasks and tasks.ts): the address is the node's.
+    const ext = [".ts", ".js"].find((e) => isFile(at(e)) && isServerFile(readFileSync(at(e), "utf8")));
+    if (ext) return `"${source}" is the node ${path}; the "use server" file beside it is "${source}${ext}"`;
+    return `"${source}" is a node: it exports its component (the default import) and hooks (useXxx); its server functions are its "use server" file's ("${source}/<file>")`;
+  }
+  const file = ["", ".ts", ".js", ".tsx", ".jsx"].map(at).find(isFile);
+  if (!file) return `there is no node or "use server" file at "${source}"`;
+  if (!isServerFile(readFileSync(file, "utf8"))) return `${relative(root, file)} is not a "use server" file ("use server" is not its first statement), and only those have functions to import by address`;
+  return notInNodeFolder(root, file);
+}
+
+/** A "use server" file that is not one of a node's own (.tsx, or in a subfolder): its functions are no actions. */
+function notInNodeFolder(root: string, file: string): string {
+  const rel = relative(realpathSync(root), realpathSync(file));
+  if (!/\.(ts|js)$/.test(file)) return `${rel}: a "use server" file is .ts or .js`;
+  return `${rel} is not directly in a node's folder, so its functions are no node's actions: move it there (its address is then "~/<node>/<file>"), or export them from a "use server" file there`;
+}
+
 /** The node a source file belongs to: the nearest folder above it with a page.tsx or layout.tsx. */
 export function nodeOfFile(root: string, file: string): string | null {
   const top = realpathSync(root);
@@ -102,6 +134,7 @@ export function nodeOfFile(root: string, file: string): string | null {
  */
 export function foreignServerFile(root: string, file: string, home: string | null): string {
   if (!home) return `${file}: a "use server" file outside any node; put it in a node's folder`;
+  if (dirname(realpathSync(file)) !== realpathSync(nodeDir(root, home)) || !/\.(ts|js)$/.test(file)) return notInNodeFolder(root, file);
   const address = `~${home === "/" ? "" : home}/${basename(file).replace(/\.(c|m)?(t|j)sx?$/, "")}`;
   return `${relative(realpathSync(root), file)} is a "use server" file of node ${home}: import it as "${address}" (its functions then run as ${home}, in its folder, and return the result here), not by a relative path`;
 }
@@ -250,7 +283,12 @@ export async function compileFile(root: string, node: string, file: string, deps
   } catch (e) {
     const errors = ((e as { errors?: { text: string; location?: { file: string; line: number } }[] }).errors ?? [
       { text: (e as Error).message },
-    ]).map((x) => (x.location ? `${x.location.file}:${x.location.line}: ${x.text}` : x.text));
+    ]).map((x) => {
+      // import { add } from "~/x" when ~/x is no "use server" file: it was taken for a node, which has no such export.
+      const m = /^No matching export in "pagent-node:(~\/[^"#]*)[^"]*" for import "([^"]+)"$/.exec(x.text);
+      const text = m ? `"${m[2]}" from "${m[1]}": ${notServerModule(root, m[1])}` : x.text;
+      return x.location ? `${x.location.file}:${x.location.line}: ${text}` : text;
+    });
     return { code: "", hash: "error", errors };
   }
 }
