@@ -2,7 +2,7 @@
 // the engine's own (SPEC 13): /_pagent/*, the browser's runtime plumbing (the shell, the bridge's HostApi, and the
 // harnesses' permission hook), as Next.js has /_next/; and /_cli, the agents' `pagent` commands. /api/** is the app's
 // own routes (routes.ts), and /mcp the same routes as MCP tools (mcp.ts): the only paths other devices reach without
-// the access token.
+// the owner key, and the ones any key is for (keys.ts: checked here, before any route runs).
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -10,7 +10,7 @@ import { extname, join, normalize, sep } from "node:path";
 import { engine, hasShell } from "./engine.ts";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { WebSocketServer } from "ws";
-import { activeRun, agentOf, agentStatus, ask, askOrDecline, saveAttachments, uploadFile, closeQuietAgents, conflictOf, follow, history, interactiveCommand, lastWords, recoverAgents, redeliver, residency, sessionHandle, startRun, stopTurn, turnsQueued, unattended, untilRun, usageOf, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
+import { activeRun, agentOf, agentStatus, ask, askOrDecline, saveAttachments, uploadFile, closeQuietAgents, conflictOf, follow, history, interactiveCommand, lastWords, lookAt, recoverAgents, redeliver, remoteAt, residency, sessionHandle, startRun, stopTurn, turnsQueued, unattended, untilRun, usageOf, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
 import { restoreQuestions, runCommand } from "./commands.ts";
 import { registerApp } from "./daemon-client.ts";
 import { forClient, runAction } from "./actions.ts";
@@ -23,13 +23,14 @@ import { attach, closeQuiet, openTerminal, recoverTerminals, terminalOf } from "
 import { harnessEnv } from "./shell-env.ts";
 import { startTriggers } from "./triggers.ts";
 import { serveMcp } from "./mcp.ts";
-import { serveRoute } from "./routes.ts";
+import { matchRoute, serveRemoteDoor, serveRoute } from "./routes.ts";
 import { presence, screenResult } from "./screen.ts";
 import { broadcast, onEvent, sse, watchTree } from "./events.ts";
 import { ensureFork } from "./fork.ts";
 import { clientInfo, Nodes } from "./nodes.ts";
 import { instancePathError, isNode, normPath, resolveRoute, type NodeFile } from "./tree.ts";
-import { isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
+import { COOKIE, isLoopbackHost, localAddresses, ownHost, remoteAccess } from "./remote.ts";
+import { createKey, presentedKey, reaches, resolveKey, revokeKey, type KeyHolder } from "./keys.ts";
 
 const env = (k: string) => process.env[`PAGENT_${k}`];
 
@@ -201,9 +202,20 @@ export function startServer(opts: ServerOptions) {
     const no = refused(req, url);
     if (no) return json(res, 403, { error: `refused: ${no}` });
     // The app's public face (its routes, and /mcp: the same routes as MCP tools) answers anyone the Host and Origin
-    // checks let through; the route decides from its caller. Everything else is the user's own: other devices need the
-    // access token.
+    // checks let through; the route decides from its caller. A key it comes with must be valid (else 401: never a
+    // stranger instead) and reach the path (else 403); without one it is a stranger. Everything else is the user's own:
+    // other devices need the owner key.
     const open = PUBLIC.test(url.pathname);
+    let key: KeyHolder | null = null;
+    if (open) {
+      const presented = presentedKey(req.headers, COOKIE);
+      if (presented) {
+        const r = resolveKey(root, presented);
+        if ("refused" in r) return json(res, 401, { error: r.refused === "expired" ? `refused: the key "${r.name}" has expired` : "refused: no such key (revoked, or never made here)" });
+        key = r.holder;
+        if (url.pathname !== "/mcp" && !reaches(key.scope, url.pathname)) return json(res, 403, { error: `refused: the key "${key.name}" is for ${key.scope}, and ${url.pathname} is outside it` });
+      }
+    }
     const access = open ? "ok" : remote?.check(req, url);
     if (access === "refused") return json(res, 401, { error: "refused: open the URL with ?token=… that `pagent serve` printed" });
     if (access === "set") {
@@ -217,10 +229,13 @@ export function startServer(opts: ServerOptions) {
       return json(res, 415, { error: "refused: send JSON (content-type: application/json)" });
     }
     try {
-      // The app's routes: api/**/route.ts (routes.ts).
-      if (/^\/api(\/|$)/.test(url.pathname)) return await serveRoute(root, nodes, req, res, url);
+      // The app's routes: api/**/route.ts (routes.ts); and a remote agent's message route when the app wrote none.
+      if (/^\/api(\/|$)/.test(url.pathname)) {
+        const door = matchRoute(root, url.pathname) ? null : await remoteAt(ctx, url.pathname);
+        return await (door ? serveRemoteDoor(ctx, door, req, res, url, key) : serveRoute(root, nodes, req, res, url, key));
+      }
       // The same routes as MCP tools (mcp.ts).
-      if (url.pathname === "/mcp") return await serveMcp(root, nodes, req, res);
+      if (url.pathname === "/mcp") return await serveMcp(root, nodes, req, res, key);
       // The app's shared npm modules: /_pagent/deps/<build id>/<file>, content-addressed, so cached for good.
       if (req.method === "GET" && url.pathname.startsWith("/_pagent/deps/")) {
         const [id, name] = url.pathname.slice("/_pagent/deps/".length).split("/");
@@ -316,7 +331,8 @@ export function startServer(opts: ServerOptions) {
         // glancing at it (the rail).
         case "GET /_pagent/agent-status": {
           const ref = { node: normPath(q("node")), agent: q("agent") };
-          const [handle, last, usage] = await Promise.all([q("handle") ? sessionHandle(ctx, ref) : undefined, q("said") ? lastWords(ctx, ref).catch(() => undefined) : undefined, usageOf(ctx, ref).catch(() => null)]);
+          // A remote agent: whether the other app answers is looked at again when the last look is old.
+          const [handle, last, usage] = await Promise.all([q("handle") ? sessionHandle(ctx, ref) : undefined, q("said") ? lastWords(ctx, ref).catch(() => undefined) : undefined, usageOf(ctx, ref).catch(() => null), lookAt(ctx, ref)]);
           // As it is once those are read (they ask its runner, which takes a moment): read before, a turn that started
           // meanwhile would arrive after its run-start as "idle", and undo it.
           const status = agentStatus(ref);
@@ -343,6 +359,18 @@ export function startServer(opts: ServerOptions) {
           if (!call) return json(res, 403, { error: "tell() works in the app's server code (an action, a route), as the engine runs it" });
           try {
             return json(res, 200, await tell(ctx, call, String(b.to ?? ""), String(b.message ?? ""), { from: b.from, stranger: !!b.stranger, interject: !!b.interject, wait: b.wait }));
+          } catch (e) {
+            return json(res, 422, { error: (e as Error).message });
+          }
+        }
+
+        // keys.create / keys.revoke from the app's server code ("pagent/server"), in a call the engine runs (calls.ts).
+        case "POST /_pagent/key": {
+          const b = (await readBody(req)) as { call?: string; create?: { scope?: string; name?: string; ttl?: string | number }; revoke?: string };
+          if (!callOf(b.call)) return json(res, 403, { error: "keys work in the app's server code (an action, a route), as the engine runs it" });
+          try {
+            if (b.revoke !== undefined) return json(res, 200, { revoked: revokeKey(root, String(b.revoke)) });
+            return json(res, 200, createKey(root, { scope: String(b.create?.scope ?? ""), name: b.create?.name, ttl: b.create?.ttl }));
           } catch (e) {
             return json(res, 422, { error: (e as Error).message });
           }

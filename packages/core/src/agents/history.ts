@@ -75,9 +75,11 @@ const isDir = (p: string) => {
 export async function runnerOp(ctx: Ctx, ref: AgentRef, op: string, pick: string): Promise<any> {
   const decl = await declOf(ctx, ref);
   if (!decl) return null;
+  const driver = await driverOf(decl);
+  if (driver.op) return driver.op(ctx, ref, op);
   const base = runnerBase(ctx, ref, decl);
   const script = runnerScript(decl.runner);
-  const more = await (await driverOf(decl)).opInput(ctx, ref, script, base.cwd);
+  const more = await driver.opInput(ctx, ref, script, base.cwd);
   let result: any = null;
   await invoke(script, { op, ...base, ...more }, base.cwd, (e) => {
     if (e.type === pick) result = e;

@@ -59,6 +59,8 @@ const usage = () => {
       "       pagent add                                            list the bridges\n" +
       "       pagent daemon status|stop|restart\n" +
       "       pagent stop <node>#<agent> [--root <app-root>]           stop that agent's turn in progress (as Esc in its TUI)\n" +
+      "       pagent key create <node> [--name n] [--ttl 1h] [--root …]  a key to the app's routes under <node> (shown once)\n" +
+      "       pagent key list | revoke <name> [--root …]\n" +
       "An app's agents have more commands (`pagent --help` in an agent's shell).",
   );
   process.exit(1);
@@ -90,6 +92,30 @@ if (env("TOKEN")) {
     console.log(describeAdd(await addNode(root, { source, app, path: flagValue(a, "path") })));
   } catch (e) {
     console.error(`Nothing added: ${(e as Error).message}`);
+    process.exit(1);
+  }
+} else if (command === "key" && ["create", "list", "revoke"].includes(arg)) {
+  // The app's keys (keys.ts): the same as the agents' `pagent key` (commands/keys.ts), for the person who hands one
+  // over. The key store is runtime state, so no server needs to run.
+  const { createKey, listKeys, revokeKey } = await import("./keys.ts");
+  const { createdText } = await import("./commands/keys.ts");
+  const a = parse(rest);
+  const root = resolve(flagValue(a, "root") ?? ".");
+  try {
+    if (arg === "create") {
+      if (!a.pos[0]) throw new Error("which node? pagent key create <node> [--name n] [--ttl 1h] [--root <app-root>]");
+      console.log(createdText(root, createKey(root, { scope: a.pos[0], name: flagValue(a, "name"), ttl: flagValue(a, "ttl") })));
+    } else if (arg === "list") {
+      const keys = listKeys(root);
+      if (!keys.length) console.log("no keys (pagent key create <node> makes one)");
+      for (const k of keys) console.log(`${k.name.padEnd(16)} ${k.scope.padEnd(16)} created ${k.created}  ${k.expires ? `${k.expired ? "expired" : "expires"} ${k.expires}` : "no expiry"}  last used ${k.lastUsed ?? "never"}`);
+    } else {
+      if (!a.pos[0]) throw new Error("which key? pagent key revoke <name> (pagent key list names them)");
+      if (!revokeKey(root, a.pos[0])) throw new Error(`no key "${a.pos[0]}" in the app at ${root}`);
+      console.log(`revoked "${a.pos[0]}"`);
+    }
+  } catch (e) {
+    console.error(`pagent key ${arg}: ${(e as Error).message}`);
     process.exit(1);
   }
 } else if (command === "serve" && arg) {

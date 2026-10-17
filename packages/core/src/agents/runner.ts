@@ -64,8 +64,10 @@ export async function invoke(script: string, input: Record<string, unknown>, cwd
  *     process per turn ("ask").
  *   outerSession: pagent started from inside this harness's own session carries that session's variables, which are
  *     not the user's settings and must not reach the harnesses pagent starts (shell-env.ts).
+ *   strangers: it can answer a stranger in a one-off turn with no tools, a low output cap and no session kept (the
+ *     "stranger" op, SPEC 13.7); a runner that cannot does not answer strangers at all.
  */
-export type Capabilities = { turns: "tui" | "thread" | "headless"; outerSession?: OuterSession };
+export type Capabilities = { turns: "tui" | "thread" | "headless"; outerSession?: OuterSession; strangers?: boolean };
 const described = new Map<string, Promise<Capabilities>>();
 
 function capabilities(script: string): Promise<Capabilities> {
@@ -78,11 +80,20 @@ function capabilities(script: string): Promise<Capabilities> {
       const turns = said?.turns === "tui" || said?.turns === "thread" ? (said.turns as Capabilities["turns"]) : "headless";
       const o = said?.outerSession;
       const outer = o && typeof o.marker === "string" && typeof o.prefix === "string" ? { marker: o.marker, prefix: o.prefix, keep: Array.isArray(o.keep) ? o.keep.map(String) : [] } : undefined;
-      return { turns, ...(outer ? { outerSession: outer } : {}) };
+      return { turns, ...(outer ? { outerSession: outer } : {}), ...(said?.strangers === true ? { strangers: true } : {}) };
     })();
     described.set(script, caps);
   }
   return caps;
+}
+
+/** What the agent's runner says it does (a runner that cannot be found: nothing). */
+export async function capabilitiesOf(decl: AgentDecl): Promise<Capabilities> {
+  try {
+    return await capabilities(runnerScript(decl.runner));
+  } catch {
+    return { turns: "headless" };
+  }
 }
 
 /** How an agent's turns reach its harness (a runner that cannot be found runs none: headless, which then says so). */

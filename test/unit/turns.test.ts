@@ -33,7 +33,7 @@ test("where a message comes from", () => {
   assert.deepEqual(fromOf(user("1", 'The user answered your question "Which?": A', "pagent")), { kind: "answer" });
   assert.deepEqual(fromOf(user("1", 'The user filled in the Secure Form "Key": saved. The value never passed through you.', "pagent")), { kind: "answer" });
   assert.deepEqual(fromOf(user("1", "tick", "trigger:/#every")), { kind: "trigger", node: "/", name: "every" });
-  const outside = { kind: "external" as const, ip: "192.168.0.50", from: "http://192.168.0.50:4880/api/message", verified: true };
+  const outside = { kind: "external" as const, ip: "192.168.0.50", from: "http://192.168.0.50:4880/api/message", key: { name: "sam", scope: "/" } };
   assert.deepEqual(fromOf({ id: "1", role: "user", parts: [{ type: "text", text: "hi" }], metadata: { caller: outside } }), { kind: "outside", who: "192.168.0.50:4880" });
   assert.deepEqual(fromOf(user("1", "summary", undefined, "compaction")), { kind: "compaction" });
   // Unmarked, Claude Code's summary reads as one.

@@ -92,6 +92,8 @@ export type AgentStatus = {
   questions: Question[];
   /** usage: null when its session has none yet (or its runner does not say). */
   session: { slashCommands?: string[]; model?: string; sessionId?: string | null; resume?: string | null; usage?: SessionUsage | null };
+  /** A remote agent (another app's) that the other app does not take messages for now: why. Shown as a session that died. */
+  offline?: string | null;
   /** The agent's native TUI, when one is open (<Terminal>): its state as the TUI reports it. */
   terminal?: { open: boolean; state?: string; kind?: string; msg?: string };
   /** Asked with `said`: the end of its last reply as one line (where it stopped, often what it asks), and when. */
@@ -165,10 +167,10 @@ export type Caller = (
   | { kind: "agent"; node: string; agent: string }
   | { kind: "trigger"; node: string; name: string }
   | { kind: "pagent" }
-  | { kind: "external"; ip: string; from?: string; verified: boolean; inReplyTo?: string }
+  | { kind: "external"; ip: string; from?: string; key?: { name: string; scope: string }; inReplyTo?: string; remote?: string }
 ) & { via?: string[] };
 
-/** A caller as people read it: "/ideas#ideas", "trigger:/ops#sweep", "http://192.168.0.50:4880/api/message (not verified)". */
+/** A caller as people read it: "/ideas#ideas", "trigger:/ops#sweep", "http://192.168.0.50:4880/api/message (key sam)". */
 export function callerLabel(c: Caller): string {
   switch (c.kind) {
     case "user": return t("caller.you");
@@ -176,7 +178,10 @@ export function callerLabel(c: Caller): string {
     case "agent": return `${c.node}#${c.agent}`;
     case "trigger": return `trigger:${c.node}#${c.name}`;
     case "pagent": return "pagent";
-    case "external": return c.verified ? (c.from ?? c.ip) : t("caller.stranger", { who: c.from ?? c.ip });
+    case "external": {
+      const who = c.from ?? c.ip;
+      return c.key ? `${who} (key ${c.key.name})` : c.inReplyTo ? who : t("caller.stranger", { who });
+    }
   }
 }
 

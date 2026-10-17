@@ -1,16 +1,15 @@
 // Reaching the server from another device (the LAN, a tailnet): `pagent serve <app> --host 0.0.0.0`. The server runs
-// actions and agents, so a device other than this machine needs the app's access token: once, in the URL the server
-// prints (`?token=…`), which sets a cookie and drops it from the address. Requests from this machine need none when
-// they call it by a loopback name (or one the user allowed).
-// The token is runtime state (<PAGENT_HOME>/state/<appId>/remote-token), the same across restarts.
-import { randomBytes, timingSafeEqual } from "node:crypto";
+// actions and agents, so a device other than this machine needs the app's owner key (keys.ts): once, in the URL the
+// server prints (`?token=…`), which sets a cookie and drops it from the address. Requests from this machine need none
+// when they call it by a loopback name (or one the user allowed, PAGENT_ALLOWED_HOSTS).
+// It is a key like any other (scope "/", the same store, the same check), and the only one that opens the pages and the
+// browser's plane; the app's public face (/api/**, /mcp) takes any key, or none (a stranger).
 import type { IncomingMessage } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, networkInterfaces } from "node:os";
-import { dirname, join } from "node:path";
-import { appId, daemonPaths } from "./daemon-protocol.ts";
+import { OWNER, ownerKey, presentedKey, resolveKey } from "./keys.ts";
 
-const COOKIE = "pagent_token";
+/** The cookie a browser on another device keeps the owner key in. */
+export const COOKIE = "pagent_token";
 
 export const isLoopbackHost = (host: string) => /^(127\.\d+\.\d+\.\d+|::1|localhost)$/i.test(host);
 
@@ -31,18 +30,6 @@ export function ownHost(host: string): boolean {
   return !!me && name.split(".")[0] === me;
 }
 
-function readToken(root: string): string {
-  const file = join(daemonPaths().home, "state", appId(root), "remote-token");
-  try {
-    const t = readFileSync(file, "utf8").trim();
-    if (t) return t;
-  } catch {}
-  const t = randomBytes(18).toString("base64url");
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, t + "\n", { mode: 0o600 });
-  return t;
-}
-
 export type Remote = {
   token: string;
   /** "ok", "set" (a valid ?token= on a page: set the cookie and redirect without it) or "refused". */
@@ -54,8 +41,11 @@ export type Remote = {
 
 /** local: a Host this machine's own pages and processes use (localhost, 127.0.0.1, a name in PAGENT_ALLOWED_HOSTS). */
 export function remoteAccess(root: string, local: (host: string) => boolean): Remote {
-  const token = readToken(root);
-  const same = (t: string) => t.length === token.length && timingSafeEqual(Buffer.from(t), Buffer.from(token));
+  const token = ownerKey(root);
+  const owner = (key: string | null) => {
+    const r = key ? resolveKey(root, key) : null;
+    return !!r && "holder" in r && r.holder.name === OWNER;
+  };
   return {
     token,
     cookie: `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`,
@@ -64,10 +54,8 @@ export function remoteAccess(root: string, local: (host: string) => boolean): Re
       // 127.0.0.1 (DNS rebinding), named with this machine's name as its first label (ownHost). It shows the token too.
       const from = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
       if (isLoopbackHost(from) && local(req.headers.host ?? "")) return "ok";
-      const cookie = (req.headers.cookie ?? "").split(/;\s*/).find((c) => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
-      if (cookie && same(cookie)) return "ok";
-      const q = url.searchParams.get("token");
-      if (q && same(q)) return req.method === "GET" ? "set" : "ok";
+      if (owner(presentedKey(req.headers, COOKIE))) return "ok";
+      if (owner(url.searchParams.get("token"))) return req.method === "GET" ? "set" : "ok";
       return "refused";
     },
     urls(port) {

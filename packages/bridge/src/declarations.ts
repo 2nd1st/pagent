@@ -61,7 +61,24 @@ export type AgentSpec = {
    * `{}` is none. Also in a node's `config`, for its agents and the ones below.
    */
   mcps?: Record<string, McpServer>;
+  /**
+   * A stranger (someone outside the app with no key, at its open message route) is never let into its session: it
+   * answers in a one-off turn of its harness with no tools and no session kept, at most this many output tokens
+   * (default 400). false: it answers no strangers. Codex has no such turn, so a Codex agent answers none.
+   */
+  strangers?: number | false;
+  remote?: never;
+  key?: never;
 };
+
+/**
+ * Another pagent app's agent, as one of this app's: its node's address there (its page URL; "/" for its root agent),
+ * and the key that app gave us for it: the name of a variable in this app's .env (SAM_KEY=pk_…), sent as the Bearer.
+ * Without a key we are a stranger there (a short answer without tools). Then it is told, listed and shown like the
+ * others; its harness and the rest are the other app's.
+ *   export const agents = { sam: { remote: "http://sam-mac:4870/dev", key: "SAM_KEY" } } satisfies Agents;
+ */
+export type RemoteAgentSpec = { remote: string; key?: string } & { [K in Exclude<keyof AgentSpec, "remote" | "key">]?: never };
 
 /** An MCP server, as Claude Code's .mcp.json and --mcp-config write one. */
 export type McpServer = { command: string; args?: string[]; env?: Record<string, string>; cwd?: string } | { type?: "http" | "sse"; url: string; headers?: Record<string, string> };
@@ -71,7 +88,7 @@ export type McpServer = { command: string; args?: string[]; env?: Record<string,
  * the Mac app it bridges (app), and the skills and MCP servers of its agents and the ones below (see AgentSpec).
  */
 export type Config = { shared?: boolean; app?: string; skills?: string[]; mcps?: Record<string, McpServer>; [key: string]: unknown };
-export type Agents = Record<string, AgentSpec>;
+export type Agents = Record<string, AgentSpec | RemoteAgentSpec>;
 
 /**
  * The app acting on its own: when (cron / every "10s" / watch a data file, this node's or another's by its path,

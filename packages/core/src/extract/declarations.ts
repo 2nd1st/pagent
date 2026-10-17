@@ -80,10 +80,12 @@ const ALLOW_RULE = /^(?:[A-Z][A-Za-z0-9]*|mcp__(?!app__|node__|app$|node$)[\w-]+
 
 /**
  * An agent as `export const agents = { <name>: { … } }` declares it.
- * cli="claude" | "codex" picks the runner; sessionId adopts an existing native session (kept as `session`). The other
+ * cli="claude" | "codex" picks the runner; sessionId adopts an existing native session (kept as `session`); strangers:
+ * the cap on a stranger's one-off answer (output tokens), or false: it answers none (agents/stranger.ts). The other
  * fields are the runner's options, passed on as they are.
  */
 function normalizeAgent(decl: Record<string, unknown>, name: string): AgentDecl | string {
+  if (decl.remote !== undefined) return remoteAgent(decl, name);
   const runner = (decl.runner as string | undefined) ?? CLI_RUNNERS[String(decl.cli ?? "")];
   if (!runner) return `agent "${name}" needs cli="claude" | "codex" (or a runner)`;
   if (decl.kind !== undefined) return `agent "${name}": kind is gone: every agent is the same kind of thing, and how it answers follows how each message reached it`;
@@ -94,10 +96,49 @@ function normalizeAgent(decl: Record<string, unknown>, name: string): AgentDecl 
     const wrong = allow.find((r) => !ALLOW_RULE.test(r));
     if (wrong !== undefined) return `agent "${name}": allow "${wrong}" is not a permission rule of its harness ("WebFetch", "Bash(curl:*)"); \`pagent\` commands are pre-approved and need none`;
   }
+  const strangers = decl.strangers;
+  if (strangers !== undefined && strangers !== false && !(typeof strangers === "number" && Number.isInteger(strangers) && strangers > 0)) {
+    return `agent "${name}": strangers is the most a stranger's one-off answer may be (output tokens, e.g. 200), or false: it answers no strangers`;
+  }
   const out: AgentDecl = { ...decl, name, runner };
   if (typeof decl.sessionId === "string") out.session = decl.sessionId;
   delete out.sessionId;
   return out;
+}
+
+/**
+ * A remote agent (SPEC 13.6): another pagent app's agent, declared as one of this app's by its node's address there
+ * (`remote: "http://sam-mac:4870/dev"`, the page URL; "/" for its root agent), and the key the other app gave us for it
+ * (`key: "SAM_KEY"`, the name of a variable in the app's .env: the key itself is never in code). Its harness, model
+ * and the rest are the other app's, so that is all. Its runner is "remote": no runner runs it (agents/remote.ts).
+ */
+function remoteAgent(decl: Record<string, unknown>, name: string): AgentDecl | string {
+  const other = Object.keys(decl).filter((k) => k !== "remote" && k !== "key");
+  if (other.length) return `agent "${name}": a remote agent is its address and its key, nothing else (${other.join(", ")}: the other app's agent has its own)`;
+  const r = remoteError(decl.remote);
+  if (r) return `agent "${name}": remote ${r}`;
+  const key = decl.key;
+  if (key !== undefined && (typeof key !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))) {
+    return `agent "${name}": key is the name of a variable in the app's .env that holds the key the other app gave you (key: "SAM_KEY", and SAM_KEY=pk_… in .env), never the key itself`;
+  }
+  return { name, runner: "remote", remote: String(decl.remote).trim().replace(/\/+$/, ""), ...(key ? { key } : {}) };
+}
+
+/** Why `remote` is not the address of another pagent app's node, or null. */
+export function remoteError(remote: unknown): string | null {
+  const how = `is the other pagent's node address, its page URL ("http://sam-mac:4870/dev"; its root agent: "http://sam-mac:4870/")`;
+  if (typeof remote !== "string" || !remote.trim()) return how;
+  let u: URL;
+  try {
+    u = new URL(remote);
+  } catch {
+    return `"${remote}" is not a URL: it ${how}`;
+  }
+  if (!/^https?:$/.test(u.protocol)) return `"${remote}" is not http(s): it ${how}`;
+  if (u.search || u.hash || u.username || u.password) return `"${remote}" has more than an address (a query, a #, credentials): it ${how}`;
+  if (/^\/api(\/|$)/.test(u.pathname)) return `"${remote}" is a route, not a node: it ${how}; the engine finds the agent's message route itself`;
+  if (u.pathname.split("/").some((s) => s.startsWith(".") || s.startsWith("_"))) return `"${remote}" is not a page's path: it ${how}`;
+  return null;
 }
 
 /** Evaluate a literal expression (strings, numbers, arrays, objects). Anything dynamic is rejected. */
@@ -455,6 +496,9 @@ export function mergeManifest(parts: Extracted[]): Extracted {
     m.lang = p.lang ?? m.lang;
     m.errors.push(...p.errors);
   }
+  // A remote agent's door here is its node's message route, so it is the node's one agent.
+  const remote = m.agents.find((a) => a.remote !== undefined);
+  if (remote && m.agents.length > 1) m.errors.push(`agent "${remote.name}" is a remote agent, so it is its node's only agent (its node's message route is where the other app reaches it): declare the others in another node`);
   for (const t of m.triggers) {
     if (!m.actions.some((a) => a.name === t.run)) m.errors.push(`trigger "${t.name}" runs "${t.run}", which is not an action of this node (an exported function of one of its "use server" files)`);
     if (t.app && typeof m.config?.app !== "string") m.errors.push(`trigger "${t.name}" watches the app, but this node is not a bridge (its config names no app)`);

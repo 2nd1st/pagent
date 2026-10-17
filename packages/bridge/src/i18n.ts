@@ -42,6 +42,7 @@ const en = {
 
   // How it is, at a glance
   "status.idle": "idle",
+  "status.offline": "offline",
   "status.working": "working",
   "status.waiting": "waiting for you",
   "status.needsAnswer": "needs your answer",
@@ -226,6 +227,7 @@ const zhCN: Words = {
   "doing.subagentStarting": "{type}：正在启动",
 
   "status.idle": "空闲",
+  "status.offline": "离线",
   "status.working": "工作中",
   "status.waiting": "在等你",
   "status.needsAnswer": "等你回答",

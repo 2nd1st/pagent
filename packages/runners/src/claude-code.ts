@@ -16,12 +16,14 @@
 //     {type:"taken", text} when a message typed during it is taken in (that turn, or the next, which is followed too)
 //   { op: "usage", cwd, stateDir } → {type:"usage", usage, file}: the session's token use (lib/usage.ts); a turn (ask,
 //     follow) ends with the same as a data-usage chunk
-//   { op: "describe" } → {type:"describe", turns, outerSession}: what the core goes by (agents.ts, Capabilities)
+//   { op: "stranger", message, systemPrompt, maxOutputTokens, options } → the chunks of a one-off answer to a stranger
+//     (SPEC 13.7): no tools, no session, its output capped (strangerOp)
+//   { op: "describe" } → {type:"describe", turns, outerSession, strangers}: what the core goes by (agents.ts, Capabilities)
 // Every op but describe may get `tui`, the pid of the agent's TUI while it runs: the session it is on is the agent's.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { UIMessage, UIMessageChunk } from "ai";
@@ -34,7 +36,7 @@ import type { SessionUsage } from "./lib/usage.ts";
 const env = (k: string) => process.env[`PAGENT_${k}`];
 
 type Input = {
-  op: "ask" | "history" | "last" | "info" | "interactive" | "holder" | "follow" | "usage" | "describe";
+  op: "ask" | "history" | "last" | "info" | "interactive" | "holder" | "follow" | "usage" | "describe" | "stranger";
   message?: string;
   cwd: string;
   stateDir: string;
@@ -50,6 +52,7 @@ type Input = {
   mcps?: Record<string, unknown>; // declared: the agent's MCP servers instead of the user's (mcpArgs)
   systemPrompt?: string;
   options?: { model?: string; tools?: string[]; permissionMode?: string; allow?: string[] };
+  maxOutputTokens?: number; // stranger: the cap on its answer
   appRoot?: string; // the app's folder: what its .claude/settings forbid holds for every agent of the app (appRules)
 };
 
@@ -64,7 +67,7 @@ const out = (
     | { type: "mark" }
     | { type: "usage"; usage: SessionUsage | null; file: string | null }
     | { type: "taken"; text: string }
-    | { type: "describe"; turns: "tui"; outerSession: { marker: string; prefix: string; keep: string[] } },
+    | { type: "describe"; turns: "tui"; outerSession: { marker: string; prefix: string; keep: string[] }; strangers: true },
 ) =>
   process.stdout.write(JSON.stringify(chunk) + "\n");
 
@@ -342,6 +345,85 @@ async function askOp(input: Input) {
   if (code !== 0 && !t.finished) out({ type: "error", errorText: stderr.trim().slice(-2000) || `claude exited with ${code}` });
   if (!t.finished) out({ type: "finish" });
   process.exitCode = code;
+}
+
+// ---------------------------------------------------------------- stranger
+
+/**
+ * A stranger's answer (SPEC 13.7): a `claude -p` of its own, apart from the agent's session. No tools at all (--tools
+ * ""), no MCP servers, skills or slash commands; none of the user's customizations (--safe-mode: CLAUDE.md, hooks,
+ * plugins, auto-memory; their login and settings stay, so it runs as their Claude Code does); no session kept; one
+ * turn at low effort, its output capped (CLAUDE_CODE_MAX_OUTPUT_TOKENS, per request); in an empty folder of its own,
+ * so nothing of the app (its files, its git) is in its context; and only the system prompt the core gives (the agent's
+ * instructions and what a stranger is), in place of Claude Code's own.
+ * An answer that runs past the cap: Claude Code asks the model to go on (up to three times, as of 2.1), and its result
+ * is then only the last part, or an error once it gives up. So the text is gathered as it streams: the answer is all of
+ * it, and once that is past the cap (about 4 characters a token), the process is stopped and the answer cut there. The
+ * model's thinking, which no setting turns off, counts towards each request's cap too: a cap much under a few hundred
+ * tokens can leave no room for any answer.
+ */
+async function strangerOp(input: Input) {
+  const dir = mkdtempSync(join(tmpdir(), "pagent-stranger-"));
+  const model = input.options?.model ?? env("DEFAULT_MODEL");
+  const cap = Math.max(1, Math.floor(input.maxOutputTokens ?? 400));
+  const args = [
+    "-p",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--tools", "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
+    "--safe-mode",
+    "--no-session-persistence",
+    "--max-turns", "1",
+    "--effort", "low",
+    "--system-prompt", input.systemPrompt ?? "",
+    ...(model ? ["--model", model] : []),
+  ];
+  out({ type: "start" });
+  const child = spawnHarness(process.env.CLAUDE_BIN ?? "claude", args, { cwd: dir, env: { ...process.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(cap) } });
+  child.stdin.end(input.message ?? "");
+  let stderr = "";
+  child.stderr.on("data", (c) => (stderr += c));
+  let written = "";
+  let cut = false;
+  let result: { text: string; isError: boolean } | null = null;
+  let buf = "";
+  child.stdout.on("data", (chunk) => {
+    buf += chunk;
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      let m: any;
+      try {
+        m = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const d = m.type === "stream_event" && m.event?.type === "content_block_delta" ? m.event.delta : null;
+      if (d?.type === "text_delta") written += d.text;
+      // Past the cap in what it wrote (about 4 characters a token), however many times it was told to go on: enough.
+      if (written.length > cap * 4 && !cut) (cut = true), child.kill();
+      if (m.type === "result") result = { text: String(m.result ?? ""), isError: !!m.is_error };
+    }
+  });
+  const code: number = await new Promise((r) => child.on("close", (c) => r(c ?? 1)));
+  rmSync(dir, { recursive: true, force: true });
+  const r = result as { text: string; isError: boolean } | null;
+  const over = cut || (!!r?.isError && /output token maximum/i.test(r.text));
+  // All it wrote (the result is only the last request's text, after Claude Code had it go on), else the result.
+  const text = over ? (written.trim() ? `${written.slice(0, cap * 4).trim()} …` : "") : r && !r.isError ? written.trim() || r.text : "";
+  if (text) {
+    const id = randomUUID();
+    for (const c of [{ type: "text-start", id }, { type: "text-delta", id, delta: text }, { type: "text-end", id }] as UIMessageChunk[]) out(c);
+    out({ type: "data-result", data: { text }, transient: true });
+  } else {
+    out({ type: "error", errorText: over ? `the answer ran past its cap (${cap} output tokens) before any of it was written: a higher \`strangers\` lets it answer` : r?.text || stderr.trim().slice(-2000) || `claude exited with ${code}` });
+  }
+  out({ type: "finish" });
+  process.exitCode = text ? 0 : code || 1;
 }
 
 /** Claude Code stream-json → AI SDK UIMessageChunks. */
@@ -917,9 +999,9 @@ function usageOp(input: Input) {
  * CLAUDE_CODE_SSE_PORT, CLAUDE_CODE_MESSAGING_TOKEN, CLAUDE_PID …, a list that changes with every release), and a
  * harness that inherits them believes it runs inside that session: they go (the user's own come back from their rc
  * files, CLAUDE_CODE_NO_FLICKER …). Kept: where Claude keeps its config (an isolated CLAUDE_CONFIG_DIR is the
- * environment's choice) and which binary to run.
+ * environment's choice) and which binary to run. It answers strangers (strangerOp).
  */
-const describeOp = () => out({ type: "describe", turns: "tui", outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] } });
+const describeOp = () => out({ type: "describe", turns: "tui", outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] }, strangers: true });
 
 // ---------------------------------------------------------------- main
 
@@ -935,4 +1017,5 @@ else if (input.op === "holder") holderOp(input);
 else if (input.op === "follow") await followOp(input);
 else if (input.op === "usage") usageOp(input);
 else if (input.op === "describe") describeOp();
+else if (input.op === "stranger") await strangerOp(input);
 else out({ type: "error", errorText: `unknown op ${(input as Input).op}` });

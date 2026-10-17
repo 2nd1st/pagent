@@ -47,6 +47,8 @@ export type TestApp = {
   close: () => Promise<void>;
   get: <T = any>(path: string) => Promise<T>;
   post: <T = any>(path: string, body: unknown) => Promise<T>;
+  /** The person's `pagent` in a terminal, for this app (its PAGENT_HOME, --root): what it printed. */
+  pagent: (...args: string[]) => string;
 };
 
 /** files: the app's, by path; env: added to the server's environment; host: where it listens (`pagent serve --host`). */
@@ -118,10 +120,17 @@ export async function testApp(files: Record<string, string>, opts: { env?: Recor
     },
     get: (path) => request(path),
     post: (path, body) => request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    pagent: (...args) => execFileSync(process.execPath, [cli, ...args, "--root", root], { env, encoding: "utf8" }),
   };
   await app.start();
   return app;
 }
+
+/** A key made with the person's `pagent key create <node> …`: the key it printed (once). */
+export const keyFor = (app: TestApp, node: string, ...more: string[]) => /\bpk_[\w-]+/.exec(app.pagent("key", "create", node, ...more))![0];
+
+/** What the fake runner answers a stranger with (agents/stranger.ts: a one-off turn without tools, the default cap). */
+export const strangerAnswer = (words: string) => `(one-off, no tools, at most 400 tokens, as a stranger) echo: ${words}`;
 
 /** Wait until `check` returns something truthy (or throw with the last thing it saw). */
 export async function until<T>(check: () => T | Promise<T>, what: string, ms = 15_000): Promise<NonNullable<T>> {

@@ -28,6 +28,27 @@ test("old agent options are errors: kind, session, allow rules that are not the 
   for (const old of ["add", "package add", "app read calculator", "run /wechat", "mcp__app__node_add"]) assert.match(errors(`{ cli: "claude", allow: ["WebFetch", ${JSON.stringify(old)}] }`), new RegExp(`allow "${old}" is not a permission rule`), old);
   assert.match(errors(`{ cli: "claude", allow: "WebFetch" }`), /allow is a list/);
   assert.equal(errors(`{ cli: "claude", allow: ["WebFetch", "Bash(curl:*)", "Read", "mcp__github__create_issue", "WebFetch(domain:example.com)"] }`), "");
+  // strangers: the cap on a stranger's one-off answer, or false.
+  assert.equal(errors(`{ cli: "claude", strangers: 200 }`), "");
+  assert.equal(errors(`{ cli: "claude", strangers: false }`), "");
+  assert.match(errors(`{ cli: "claude", strangers: true }`), /strangers is the most a stranger's one-off answer may be/);
+});
+
+test("a remote agent: another pagent's node address, and nothing else; its node's only agent", () => {
+  const one = (spec: string) => analyze(`export const agents = { sam: ${spec} };`);
+  assert.deepEqual(one(`{ remote: "http://sam-mac:4870/dev/" }`).agents, [{ name: "sam", runner: "remote", remote: "http://sam-mac:4870/dev" }]);
+  assert.equal(one(`{ remote: "http://192.168.0.50:4870/" }`).agents[0].remote, "http://192.168.0.50:4870");
+  assert.match(one(`{ remote: "http://h:4870/dev", cli: "claude", model: "m" }`).errors.join(), /agent "sam": a remote agent is its address and its key, nothing else \(cli, model/);
+  // Its key: the name of a variable in the app's .env, never the key itself.
+  assert.deepEqual(one(`{ remote: "http://h:4870/dev", key: "SAM_KEY" }`).agents, [{ name: "sam", runner: "remote", remote: "http://h:4870/dev", key: "SAM_KEY" }]);
+  assert.match(one(`{ remote: "http://h:4870/dev", key: "pk_abc-def" }`).errors.join(), /key is the name of a variable in the app's .env/);
+  assert.match(one(`{ remote: "sam-mac:4870/dev" }`).errors.join(), /remote "sam-mac:4870\/dev" is not http\(s\)|is not a URL/);
+  assert.match(one(`{ remote: "/dev" }`).errors.join(), /is not a URL: it is the other pagent's node address/);
+  assert.match(one(`{ remote: "http://h:4870/api/dev/message" }`).errors.join(), /is a route, not a node.*finds the agent's message route itself/);
+  assert.match(one(`{ remote: "http://h:4870/dev?x=1" }`).errors.join(), /more than an address/);
+  assert.match(one(`{ remote: "" }`).errors.join(), /remote is the other pagent's node address/);
+  const two = analyze(`export const agents = { sam: { remote: "http://h:4870/" }, bot: { cli: "claude" } };`);
+  assert.match(mergeManifest([two]).errors.join(), /agent "sam" is a remote agent, so it is its node's only agent/);
 });
 
 test("an agent without cli or runner is an error; a runner may be a script's path", () => {

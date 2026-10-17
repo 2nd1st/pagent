@@ -203,6 +203,7 @@ button.pagent-ghost:hover:not(:disabled) { background: var(--pagent-surface-2); 
 .pagent-navdot[data-state="idle"], .pagent-dot { box-shadow: inset 0 0 0 1.5px var(--pagent-faint); }
 .pagent-navdot[data-state="unread"] { background: var(--pagent-accent); }
 .pagent-navdot[data-state="working"], .pagent-dot[data-busy="true"] { background: var(--pagent-working); box-shadow: none; animation: pagent-breathe 1.6s ease-in-out infinite; }
+.pagent-navdot[data-state="offline"], .pagent-dot[data-offline="true"] { background: none; box-shadow: inset 0 0 0 1.5px var(--pagent-faint); opacity: 0.4; animation: none; }
 .pagent-navdot[data-state="waiting"], .pagent-dot[data-asking="true"] { background: var(--pagent-waiting); box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--pagent-waiting) 18%, transparent); animation: none; }
 @keyframes pagent-breathe {
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--pagent-working) 45%, transparent); }

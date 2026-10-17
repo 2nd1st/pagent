@@ -15,19 +15,20 @@ export type Handler = { method: Method; kind: "typed" | "raw" | "none"; schema?:
 /** What `inbox` from "pagent/server" takes: the message, who it is from (their message route), and how to deliver it. */
 export const INBOX: Omit<Handler, "method"> = {
   kind: "typed",
-  input: "{ text: string; from?: string; inReplyTo?: string; interject?: boolean; wait?: boolean | number }",
+  input: "{ text: string; from?: string; id?: string; inReplyTo?: string; interject?: boolean; wait?: boolean | number }",
   schema: {
     type: "object",
     properties: {
       text: { type: "string", description: "the message" },
-      from: { type: "string", description: "your own message route (http://<host>:<port>/api/…/message), where the reply goes; without it you are a stranger and get no reply" },
+      from: { type: "string", description: "your own message route (http://<host>:<port>/api/…/message), where the reply goes (with a key; without one you are a stranger, answered only in the response)" },
+      id: { type: "string", description: "your id for this message: the reply POSTed to you names it (inReplyTo)" },
       inReplyTo: { type: "string", description: "the id of the message of ours this answers (an automatic reply: it is not answered again)" },
       interject: { type: "boolean", description: "into the agent's turn in progress, if it is in one" },
       wait: { anyOf: [{ type: "boolean" }, { type: "number" }], description: "wait for the agent's answer (up to 100 s, or that many seconds) and get it in the response" },
     },
     required: ["text"],
   },
-  doc: "A message to this agent. It answers with { id }, and its reply is POSTed to `from` as { text, from, inReplyTo: id } (with `wait`: in the response, as { id, reply }).",
+  doc: "A message to this agent. With a key (Authorization: Bearer) you are told as yourself: it answers with { id }, and its reply is POSTed to `from` as { text, from, inReplyTo: <your id, or that one> } (with `wait`: in the response, as { id, reply }). Without a key you are a stranger: a short answer, { reply }, and nothing else.",
 };
 
 export function routeExports(code: string, file: string): { handlers: Handler[]; errors: string[] } {

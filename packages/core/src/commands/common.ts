@@ -1,6 +1,6 @@
 // What the `pagent` commands share: their shape, the command line's arguments, and the arguments that name things in
 // the app (a node, an agent). commands/index.ts is the registry.
-import { agentStatus, type AgentRef, type Ctx } from "../agents.ts";
+import { agentStatus, lookAt, type AgentRef, type Ctx } from "../agents.ts";
 import { appOf } from "../compile.ts";
 import type { AgentDecl } from "../extract.ts";
 import { realPath } from "../refs.ts";
@@ -56,21 +56,29 @@ export function nodeArg(ctx: Ctx, s: string): string {
 
 export const folderOf = (ctx: Ctx, path: string) => nodeDir(ctx.root, path).replace(/\/$/, "");
 
-/** Every agent in the app, addressable as "<node path>#<agent name>". */
+/**
+ * Every agent in the app, addressable as "<node path>#<agent name>". A remote agent (another app's, declared here) says
+ * where it is, and offline: why the other app does not take messages for it now.
+ */
 export async function directory(ctx: Ctx) {
   type Busy = { activity?: string | null; quiet?: string; stuck?: boolean };
-  const out: ({ address: string; node: string; agent: string; runner: string; folder: string; cwd?: string; busy: boolean } & Busy)[] = [];
+  const out: ({ address: string; node: string; agent: string; runner: string; remote?: string; offline?: string; folder: string; cwd?: string; busy: boolean } & Busy)[] = [];
   for (const path of listNodes(ctx.root)) {
     const i = await ctx.nodes.declarations(path).catch(() => null);
     for (const a of i?.manifest.agents ?? []) {
+      const ref = { node: path, agent: a.name };
+      if (typeof a.remote === "string") await lookAt(ctx, ref);
+      const status = agentStatus(ref);
       out.push({
         address: `${path}#${a.name}`,
         node: path,
         agent: a.name,
         runner: a.runner,
+        ...(typeof a.remote === "string" ? { remote: a.remote } : {}),
+        ...(status.offline ? { offline: status.offline } : {}),
         folder: folderOf(ctx, path),
         ...(typeof a.cwd === "string" ? { cwd: a.cwd } : {}),
-        ...busyOf(agentStatus({ node: path, agent: a.name })),
+        ...busyOf(status),
       });
     }
   }

@@ -12,7 +12,7 @@
 // returns at once, and the outcome comes to the agent later as a message (harnesses background a command that runs
 // long, then run it again). The same command still pending is not started twice.
 //
-// The commands themselves are in this folder by what they are about (nodes, agents, screen, install); common.ts has
+// The commands themselves are in this folder by what they are about (nodes, agents, keys, screen, install); common.ts has
 // what they share.
 import type { AgentRef, Ctx } from "../agents.ts";
 import { keyOf } from "../refs.ts";
@@ -21,9 +21,10 @@ import { treeCommand, statusCommand, runOnNodeCommand } from "./nodes.ts";
 import { agentsCommand, tellCommand, stopCommand, askUserCommand } from "./agents.ts";
 import { screenReadCommand, screenActCommand, screenOpenCommand } from "./screen.ts";
 import { bridgesCommand, addCommand, packageAddCommand, appCommands } from "./install.ts";
+import { keyCreateCommand, keyListCommand, keyRevokeCommand } from "./keys.ts";
 
 /** Every command, in the order `pagent --help` lists them. */
-const commands: Command[] = [treeCommand, statusCommand, agentsCommand, runOnNodeCommand, tellCommand, stopCommand, askUserCommand, screenReadCommand, screenActCommand, screenOpenCommand, bridgesCommand, addCommand, packageAddCommand, ...appCommands];
+const commands: Command[] = [treeCommand, statusCommand, agentsCommand, runOnNodeCommand, tellCommand, stopCommand, askUserCommand, keyCreateCommand, keyListCommand, keyRevokeCommand, screenReadCommand, screenActCommand, screenOpenCommand, bridgesCommand, addCommand, packageAddCommand, ...appCommands];
 
 // ---------------------------------------------------------------- help and dispatch
 

@@ -8,7 +8,7 @@ import { DataConflict, type AgentEvent, type AgentRef, type HostApi } from "./co
 import { instanceDir } from "./instance.ts";
 
 export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type RateLimit, type Say, type SessionUsage, type SubagentInfo } from "./contract.ts";
-export type { Agents, AgentSpec, Config, McpServer, Tools, Triggers } from "./declarations.ts";
+export type { Agents, AgentSpec, Config, McpServer, RemoteAgentSpec, Tools, Triggers } from "./declarations.ts";
 
 export const HostContext = createContext<HostApi | null>(null);
 

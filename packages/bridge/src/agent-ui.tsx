@@ -105,11 +105,15 @@ export function quietNote(s: AgentStatus, now = Date.now()): string | null {
   return t(s.stuck || ms >= STUCK ? "quiet.stuck" : "quiet", { span: span(ms) });
 }
 
-/** Its state in a few words: what it is doing (its label, and how long it has been quiet), waiting for an answer, or idle. */
-const activityText = (s: AgentStatus) => (s.questions.length ? t("status.needsAnswer") : s.busy ? [doingOf(s).label, quietNote(s)].filter(Boolean).join(" · ") : t("status.idle"));
+/**
+ * Its state in a few words: what it is doing (its label, and how long it has been quiet), waiting for an answer, idle,
+ * or offline (a remote agent the other app does not take messages for).
+ */
+const activityText = (s: AgentStatus) => (s.questions.length ? t("status.needsAnswer") : s.busy ? [doingOf(s).label, quietNote(s)].filter(Boolean).join(" · ") : s.offline ? t("status.offline") : t("status.idle"));
 
-/** The call behind the label, for a closer look (a tooltip): "Bash git status". Nothing when there is no call. */
+/** The call behind the label, for a closer look (a tooltip): "Bash git status"; offline: why. Nothing when there is no call. */
 const activityDetail = (s: AgentStatus) => {
+  if (!s.busy && s.offline) return s.offline;
   if (!s.busy || s.questions.length || !s.activity) return undefined;
   return !s.doing || s.doing.tool || s.doing.detail ? s.activity : undefined;
 };
@@ -420,7 +424,7 @@ export function AgentBar({ agent: explicit, onExpand, onClose, placeholder }: { 
         </div>
       )}
       <div className="pagent-bar">
-        <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} title={[activityText(status), activityDetail(status)].filter(Boolean).join("\n")} />
+        <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} data-offline={!!status.offline && !status.busy} title={[activityText(status), activityDetail(status)].filter(Boolean).join("\n")} />
         <Composer key={draftKey(agent)} keep={draftKey(agent)} placeholder={placeholder ?? t("bar.placeholder")} disabled={status.busy} commands={status.session.slashCommands} onSend={(text, files) => void sendMessage(text ? { text, files } : { files })} />
         {onExpand && <button className="pagent-icon" title={t("bar.fullScreen")} onClick={onExpand}>⤢</button>}
         {onClose && <button className="pagent-icon" title={t("close")} onClick={onClose}>×</button>}
@@ -591,7 +595,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
     >
       {over && <div className="pagent-console-drop">{t("console.drop")}</div>}
       <header className="pagent-console-head">
-        <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} />
+        <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} data-offline={!!status.offline && !status.busy} />
         <strong>{agent.agent}</strong>
         {/* The page says where this is (its title, in the navigation); the head says who and what it is doing. */}
         <span className="pagent-muted" title={activityDetail(status)}>{[status.session.model, contextText(status.session.usage), activityText(status)].filter(Boolean).join(" · ")}</span>
@@ -678,7 +682,7 @@ export function AgentFab({ agent: explicit, initial = "closed" }: { agent?: Agen
           onClick={() => setMode(mode === "closed" ? "bar" : "closed")}
           onDoubleClick={() => setMode("console")}
         >
-          <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} />
+          <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} data-offline={!!status.offline && !status.busy} />
           <span className="pagent-fab-label">{status.busy || status.questions.length ? activityText(status) : agent.agent}</span>
           {status.questions.length > 0 && <span className="pagent-badge">{status.questions.length}</span>}
         </button>

@@ -2,11 +2,14 @@
 // /mcp, their other encoding): nothing else the engine serves is for anyone but this machine's user and the app's own
 // agents. A route is a thin layer of HTTP around actions: it imports any node's server functions ("~/x/actions") and
 // `tell` from "pagent/server". It runs as a "use server" function does: a process per call, in the app's folder, with
-// the app's .env, the same timeout. Its second parameter says who calls (caller: from outside, ip / from / verified; an
-// agent of the app, when `pagent tell` goes through the agent's message route) and the path's [segments] (params).
+// the app's .env, the same timeout. Its second parameter says who calls (caller: from outside, ip / from / key; an agent
+// of the app, when `pagent tell` goes through the agent's message route) and the path's [segments] (params). The key a
+// request came with is checked before any route runs (server.ts, keys.ts): a route only ever sees a valid one, within
+// its scope, or none (a stranger).
 //
 // The agent's message route: /api/<node>/message (the root's: /api/message). Not written, the agent takes no messages
-// from outside (404) and the app's own agents' `pagent tell` tells it directly; written, both go through it.
+// from outside (404) and the app's own agents' `pagent tell` tells it directly; written, both go through it. A remote
+// agent's is open without the file (serveRemoteDoor): the other app's agent answers there.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join, relative } from "node:path";
@@ -15,8 +18,12 @@ import { bundle, runServerCode, type ServerOutcome } from "./actions.ts";
 import { via, type Caller } from "./caller.ts";
 import { withCall } from "./calls.ts";
 import { METHODS, routeExports, type Handler, type Method } from "./extract/routes.ts";
+import type { Ctx } from "./agents.ts";
 import type { Nodes } from "./nodes.ts";
-import { verifyFrom } from "./tell.ts";
+import { keyOf, type AgentRef } from "./refs.ts";
+import type { KeyHolder } from "./keys.ts";
+import { takeReply } from "./outside.ts";
+import { tell } from "./tell.ts";
 
 export type Route = {
   file: string;
@@ -201,24 +208,21 @@ export const tooLarge = `the body is over ${MAX_BODY / 1024 / 1024} MB, the most
 export const sourceIp = (req: IncomingMessage) => (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
 
 /**
- * Who a request from outside is: its address, and, when its JSON body says `from` (its message route), whether that
- * address is on the machine the request came from (verified; otherwise it is a stranger). inReplyTo: it answers a
- * message of ours.
+ * Who a request from outside is: its address, the key it came with (none: a stranger), and what its JSON body says:
+ * `from` (its message route, where a reply would go) and `id` (its own for the message, which a reply names).
+ * inReplyTo: it is the reply to a message of ours, which went out from this door (`door`, the route's path): let in
+ * once (outside.ts), and dropped from the caller otherwise (it is then a message like any other).
  */
-export async function outsideCaller(ip: string, body: unknown): Promise<Caller> {
+export function outsideCaller(root: string, ip: string, body: unknown, key: KeyHolder | null, door: string): Caller {
   const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const from = typeof b.from === "string" && /^https?:\/\//i.test(b.from) ? b.from : undefined;
-  return {
-    kind: "external",
-    ip,
-    ...(from ? { from } : {}),
-    verified: from ? await verifyFrom(from, ip) : false,
-    ...(typeof b.inReplyTo === "string" && b.inReplyTo ? { inReplyTo: b.inReplyTo } : {}),
-  };
+  const id = typeof b.id === "string" && /^[\w.:-]{1,200}$/.test(b.id) ? b.id : undefined;
+  const inReplyTo = typeof b.inReplyTo === "string" && takeReply(root, b.inReplyTo, door) ? b.inReplyTo : undefined;
+  return { kind: "external", ip, ...(from ? { from } : {}), ...(key ? { key } : {}), ...(id ? { id } : {}), ...(inReplyTo ? { inReplyTo } : {}) };
 }
 
-/** A request to /api/**: the route's method, run for a caller from outside. */
-export async function serveRoute(root: string, nodes: Nodes, req: IncomingMessage, res: ServerResponse, url: URL) {
+/** A request to /api/**: the route's method, run for a caller from outside (key: the one it came with, checked). */
+export async function serveRoute(root: string, nodes: Nodes, req: IncomingMessage, res: ServerResponse, url: URL, key: KeyHolder | null) {
   const found = matchRoute(root, url.pathname);
   if (!found) return send(res, 404, { error: `no route ${url.pathname}` });
   const { handlers, errors } = routeInfo(root, found.route);
@@ -246,7 +250,7 @@ export async function serveRoute(root: string, nodes: Nodes, req: IncomingMessag
   }
   const headers = Object.fromEntries(Object.entries(req.headers).flatMap(([k, v]) => (v === undefined ? [] : [[k, Array.isArray(v) ? v.join(", ") : v]])));
   const r = await runRoute(root, nodes, found.route, handler, {
-    caller: await outsideCaller(sourceIp(req), json),
+    caller: outsideCaller(root, sourceIp(req), json, key, url.pathname),
     params: found.params,
     url: `http://${req.headers.host ?? "localhost"}${url.pathname}${url.search}`,
     input,
@@ -258,6 +262,35 @@ export async function serveRoute(root: string, nodes: Nodes, req: IncomingMessag
     return void res.end(Buffer.from(r.response.body, "base64"));
   }
   send(res, 200, r.value);
+}
+
+/**
+ * A remote agent's message route, which the engine serves when the app wrote none (agents/remote.ts): its door for the
+ * other app's replies and the messages it starts. It does what the default inbox does: a POST of { text, from?, … } is
+ * told to the agent as its sender (a reply, or with a key) or as a stranger, which tell() brings to the remote agent's
+ * door.
+ */
+export async function serveRemoteDoor(ctx: Ctx, ref: AgentRef, req: IncomingMessage, res: ServerResponse, url: URL, key: KeyHolder | null) {
+  if (req.method !== "POST") return send(res, 405, { error: `${url.pathname} takes POST { text, from }` }, { allow: "POST" });
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  let body: { text?: unknown; from?: unknown; wait?: unknown; interject?: unknown };
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  } catch {
+    return send(res, 400, { error: "the body is not JSON" });
+  }
+  if (typeof body.text !== "string" || !body.text.trim()) return send(res, 400, { error: `${url.pathname} takes { text, from }` });
+  const caller = via(outsideCaller(ctx.root, sourceIp(req), body, key, url.pathname), url.pathname);
+  const known = caller.kind === "external" && (caller.key || caller.inReplyTo);
+  const who = !known ? { stranger: true } : caller.from ? { from: caller.from } : {};
+  const wait = typeof body.wait === "number" || body.wait === true ? body.wait : undefined;
+  try {
+    const r = await tell(ctx, { caller }, keyOf(ref), body.text, { ...who, ...(body.interject === true ? { interject: true } : {}), ...(wait ? { wait } : {}) });
+    send(res, 200, { ...(r.id ? { id: r.id } : {}), ...(r.reply !== undefined ? { reply: r.reply } : {}) });
+  } catch (e) {
+    send(res, 422, { error: (e as Error).message });
+  }
 }
 
 export { METHODS, type Handler, type Method };

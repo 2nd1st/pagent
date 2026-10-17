@@ -104,6 +104,12 @@ a question ("what can this app do?", "where did my notes go?"). Look before you 
 - Ask what the change is for when it is not obvious: "too cramped" may mean they need to see more at once, or to find
   one thing faster. Fix the cause, not the symptom.
 - Work that belongs to a page's own agent (its data, its domain) goes to that agent with `pagent tell`.
+- "Talk to Sam's agent", "connect to that other app": another pagent app's agent becomes one of this app's by
+  declaring it, `agents = { sam: { remote: "<its node's address>", key: "SAM_KEY" } }` on a page of its own (the
+  pagent skill, "Routes"; the key the other app gave, in `.env`), then it is told like any agent here. No forwarding
+  routes, IP checks or polling triggers of your own. To let the other app reach this one, open an inbox (the one-line
+  `api/<node>/message/route.ts`), give it a key (`pagent key create <node> --name sam`) and serve with `--host`.
+  Without a key, anyone is a stranger: a short answer with no tools, never into an agent's session.
 - A request that would delete pages or data: confirm first, in one sentence. Everything else: just do it.
 
 ## Apps on this Mac

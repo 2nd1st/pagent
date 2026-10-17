@@ -21,8 +21,12 @@ export type AskInput = AgentRef & {
 // Where agents reach this app, through the daemon (so it outlives server restarts): hookBase, its HTTP proxy (for
 // hooks; baseUrl without one), and agentSock, the socket for their `pagent` commands. secret: what their tokens are
 // made from (the daemon's, for as long as it runs the agents).
-/** Where the result of a run goes outside the app: POST url { text, from, inReplyTo }; path: our message route for the agent. */
-export type ReplyPost = { url: string; path: string };
+/**
+ * Where the result of a run goes outside the app: POST url { text, from, inReplyTo }; path: our message route for the
+ * agent. inReplyTo: the sender's id for its message (else the run's, which it got in the answer). remote: the message
+ * came from that remote agent of ours (agents/remote.ts), from whose door the reply goes.
+ */
+export type ReplyPost = { url: string; path: string; inReplyTo?: string; remote?: string };
 
 export type Ctx = { root: string; nodes: Nodes; baseUrl: string; hookBase?: string; agentSock?: string; secret?: string };
 
@@ -43,6 +47,8 @@ export type Run = {
   taken?: boolean;
   /** The message's letter in the inbox (inbox.ts): what to do with it once the harness took the message, or not. */
   letter?: { taken: () => void; untaken: () => void };
+  /** Its message reached where it goes, or why not: set by a driver that sends it elsewhere (a remote agent's), for whoever tells it. */
+  sent?: Promise<void>;
   /** Someone stopped its turn (`pagent stop`, the Stop button): how it ends is no error. */
   stopped?: boolean;
   /** When its last step came (a chunk), or it started: how long it has been quiet. */

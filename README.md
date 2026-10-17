@@ -73,9 +73,16 @@ What it does today:
   LLM), which wakes an agent only if it wants to: `tell()` from `pagent/server`. Testing one is running its action.
 - **Routes are the app's public face**: `api/**/route.ts` is `/api/**` (Next.js Route Handlers), and `/mcp` serves the
   same routes as MCP tools. An agent's address outside is its message route, `/api/<node>/message`: closed until the
-  app writes it (one line, `export { inbox as POST } from "pagent/server"`), so agents of two apps talk with
-  `pagent tell http://…/api/message "…"`. Everything else the engine serves is for this machine's user and the app's
-  own agents.
+  app writes it (one line, `export { inbox as POST } from "pagent/server"`). Everything else the engine serves is for
+  this machine's user and the app's own agents.
+- **Keys say who a caller is**: `pagent key create /dev --name sam [--ttl 1h]` gives one subtree of the app's routes to
+  whoever holds it (`Authorization: Bearer`); `keys.create()` does the same from server code. Without a key a caller is
+  a stranger: at an open inbox the agent answers it in a one-off turn with no tools and a short answer, outside its
+  session. The URL `pagent serve --host` prints carries the owner's key, the only one that opens the pages.
+- **Another app's agent is declared as one of yours**: `agents = { sam: { remote: "http://sam-mac:4870/dev", key:
+  "SAM_KEY" } }` (its node's address there, whose inbox is open, and the key it gave you, in `.env`). Then `pagent
+  tell /sam "…"`, `pagent agents`, the navigation and the page's `AgentConsole` treat it as any agent of the app; its
+  replies come back to whoever asked.
 - **Actions are `"use server"` functions**: the page imports one and awaits it (`import { plan } from "./actions"`),
   typed as written; a thrown error rejects with its message. Agents run the same function (`pagent run /board plan`),
   triggers run it, routes import it. Secrets and `node:` modules stay on the server.

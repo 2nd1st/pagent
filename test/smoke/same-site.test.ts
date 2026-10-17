@@ -69,7 +69,7 @@ describe("GETs from another port of this machine", () => {
   });
 
   test("a device with the token: its own pages are as before, an <img> elsewhere is not", { skip: !lan && "no LAN address" }, async () => {
-    const cookie = `pagent_token=${readFileSync(join(app.home, "state", appId(app.root), "remote-token"), "utf8").trim()}`;
+    const cookie = `pagent_token=${readFileSync(join(app.home, "state", appId(app.root), "owner-key"), "utf8").trim()}`;
     const base = `http://${lan}:${new URL(app.url).port}`;
     assert.equal(await get(`${base}/_pagent/pages`, { cookie, ...fetched("same-origin") }), 200);
     assert.equal(await get(`${base}/_pagent/pages`, { cookie, ...img("same-site") }), 403);

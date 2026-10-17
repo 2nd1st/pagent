@@ -77,7 +77,7 @@ export default function Page() {
 - **Another node's server functions are imported by its address**: `import { archive } from "~/mail/actions"` (the node's path, then the `"use server"` file without extension), in page code and in server code alike. Each call runs as that node: its action, in its folder (its data files, its checks), and you get its return value, or its error as an exception. A relative path into another node's folder (`"../mail/actions"`) does not compile: it would run in the wrong folder. Only a `"use server"` file directly in a node's folder (`.ts` or `.js`) has an address; when a child node has its name (`tasks.ts` beside the node `/tasks`), `"~/tasks"` is the node, and the file is `"~/tasks.ts"`.
 - **Triggers make the node act on its own** (`export const triggers`): a trigger is when + an action, `{ <when>, run: "<action>" }`. When: `cron: "*/10 * * * *"`, `every: "10s"` (also `"5m"`, `"1h"`; for polling local state, such as an app through a bridge, more often than once a minute), `watch: "inbox.json"` (a data file of this node; `"*.json"`; another node's by its path, `"~/worker/tasks.json"`), or `app: true` (a bridge's app changed: below). The action is all the trigger does (code, no LLM): **it wakes an agent itself, when one should wake**, with `tell("/inbox#triage", "…")` from `"pagent/server"` (the message says it comes from the trigger, `(from trigger:/inbox#new)`). So write it to cost nothing and tell nobody when nothing changed (with `every` it runs every few seconds: keep a cursor in a data file), and to tell once per new thing: an agent it tells may write the very file the trigger watches, which runs the action again. A trigger never overlaps itself (a tick while it still runs is skipped; a change to what it watches while it runs runs it again when it ends: up to three times in a row, then once more after a pause, then not until the next change); it does not wait for the agent it told. Editing the app leaves an `every` counting; changing that trigger's declaration starts its count over. Runs it starts are unattended, and so are the runs they lead to (what such an agent delegates with `pagent tell`, and the result coming back): nobody can approve or answer, so the agent does the work with file tools and leaves a note in the data for the user. `pagent tree` shows each trigger's last result; **to test one, run its action** (`pagent run /inbox newMail`: the same code; a tell in it then comes from you, and its reply back to you). Something from outside (a CI job, a webhook of another service) comes in through a route instead (below).
 - **Page tools are for view state** (which tab, which item is selected, what is filtered: state that lives only in the page). They run in the user's open page, so they only work while someone is looking at it. Data goes in files (`useData`); commands go in actions (the `"use server"` file). Agents run them like actions (`pagent run /board show '{"status": "open"}'`).
-- Agent options: `cli` ("claude" | "codex"), `instructions` (a file in the node's folder, e.g. `_agent.md`, with what this agent is for and how it works: added to its system prompt; the leading underscore keeps it code, not data), `allow` (what its harness lets it do without asking: Claude Code's own permission rules, `["WebFetch", "Bash(curl:*)"]`; Codex has no such rules, its sandbox decides; `pagent` needs none, it is pre-approved; declare what its job needs, above all when it runs from triggers, where nobody can approve anything), `cwd`, `sessionId` (adopt an existing CLI session), `model`, `effort`, `resident` (default true: once the agent's terminal is open it stays open; `false` or a number of minutes: it closes when nobody watches and the agent was quiet that long, and the next message resumes the session), `shell` (every harness already starts with the user's login-shell environment, so keys and PATH from their `~/.zshrc` are there; `shell: true` also starts its terminal through that shell, so the user's own function or alias wrapping `claude` / `codex` runs; headless turns get the environment only).
+- Agent options: `cli` ("claude" | "codex"), `instructions` (a file in the node's folder, e.g. `_agent.md`, with what this agent is for and how it works: added to its system prompt; the leading underscore keeps it code, not data), `allow` (what its harness lets it do without asking: Claude Code's own permission rules, `["WebFetch", "Bash(curl:*)"]`; Codex has no such rules, its sandbox decides; `pagent` needs none, it is pre-approved; declare what its job needs, above all when it runs from triggers, where nobody can approve anything), `cwd`, `sessionId` (adopt an existing CLI session), `model`, `effort`, `resident` (default true: once the agent's terminal is open it stays open; `false` or a number of minutes: it closes when nobody watches and the agent was quiet that long, and the next message resumes the session), `shell` (every harness already starts with the user's login-shell environment, so keys and PATH from their `~/.zshrc` are there; `shell: true` also starts its terminal through that shell, so the user's own function or alias wrapping `claude` / `codex` runs; headless turns get the environment only). Or `remote` alone: another app's agent, declared as one of this app's ("Routes" below).
 - **Skills and MCP servers: the harness's own, unless declared.** By default an agent has what its harness has for the user (their `~/.claude` / `~/.codex`: skills, plugins, MCP servers). Declare `skills` and/or `mcps` on the agent, or in a node's `export const config` (for its agents and the ones below; the nearest declaration wins, per category), and that agent gets only those for that category, none of the user's (plus pagent's own skill): `skills: ["~/skills/design"]` (folders with a SKILL.md, or a folder of them; `~/` is the app, `./` this node's folder), `mcps: { github: { command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] } }` (the harness's own JSON, by name, `{ type: "http", url }` too; secrets stay out of code, in the environment; `{}` is none). Declare them when an agent should not depend on how this machine's user set up their CLI (an app others will run, an agent that must not see the user's other tools); otherwise leave them out.
 - **What no agent of the app may do: the root's `.claude/settings.json`.** Claude Code reads a project's settings only in the folder it starts in, and each agent starts in its node's folder; so every Claude Code agent of the app also gets the `permissions.deny` and `permissions.ask` rules of the app root's `.claude/settings.json` (and `settings.local.json`). `{ "permissions": { "deny": ["Read(//**/.env)"] } }` there keeps all of them out of the `.env` files. A path in such a rule is the root's for every agent (`Read(/secrets/**)` and `Read(secrets/**)` are the root's `secrets`, `Read(.env)` any `.env` in the app). Its `allow` holds only for the root's agent (declare what another agent needs with its `allow`), and so does everything else in it; a node folder's own `.claude/settings.json` holds for the agent of that folder.
 - **A folder is a session.** Without `sessionId`, an agent continues the latest session in its folder (like `claude --continue`), so the same conversation is reachable from the CLI. So one such agent per folder: put a second one in a child folder.
@@ -118,7 +118,7 @@ The app's only door to the outside is the routes it writes: `api/**/route.ts` is
 (`api/ideas/route.ts` → `/api/ideas`; `[id]` and `[...path]` folders are params). A route is a thin layer of HTTP around
 actions: it imports any node's server functions (`~/ideas/actions`) and `tell` from `"pagent/server"`. Nothing else
 the engine serves is for anyone but this machine's user and the app's own agents; other devices on the network reach
-`/api/**` and `/mcp` without the access token. So **whatever you write there is public on the network: look at
+`/api/**` and `/mcp` without the owner's token. So **whatever you write there is public on the network: look at
 `caller` first**, and keep it to what you mean to offer.
 
 ```ts
@@ -127,7 +127,7 @@ import { add } from "~/ideas/actions";
 
 /** Add an idea to the board. */
 export async function POST(input: { text: string; tags?: string[] }, { caller, params, url }) {
-  if (caller.kind === "external" && !caller.verified) return Response.json({ error: "who are you?" }, { status: 403 });
+  if (caller.kind === "external" && !caller.key) return Response.json({ error: "who are you?" }, { status: 403 });
   return add(input);   // JSON out; or return a Response for a status, headers, a file, an image
 }
 ```
@@ -139,32 +139,68 @@ export async function POST(input: { text: string; tags?: string[] }, { caller, p
 - **It runs as a `"use server"` function does**: a process per request, 120 s at most, the app's `.env` loaded, in the
   app's folder (`data` from `"pagent/server"` is the root's data files; reach a node's through its actions). A body
   over 10 MB is refused (413) before it runs, on `/mcp` too.
-- **`caller`** (the second parameter): from outside, `{ kind: "external", ip, from?, verified, inReplyTo? }`: `from` is
-  the sender's own message route as its JSON body says, `verified` that its host is the machine the request came from
-  (anything else is a **stranger**), `inReplyTo` that it is the automatic reply to a message of ours. When an agent of
-  this app sends through the route (`pagent tell`, below), `{ kind: "agent", node, agent }`. `via` lists the code it came
-  through. The engine keeps no address book: whom to believe is the route's call.
+- **Keys: who a caller is, and how far it reaches.** `pagent key create /ideas --name sam [--ttl 1h]` makes a key for
+  one subtree (the node and everything under it; `/` is every route) and shows it once; hand it over (or have the
+  person do it: `pagent key create … --root <app>` in their terminal). Whoever holds it sends `Authorization: Bearer
+  <key>` and is that name; a route outside its subtree answers 403, a revoked or expired key 401 (never quietly a
+  stranger). `pagent key list`, `pagent key revoke sam`. From server code: `keys.create({ scope, ttl?, name? })` and
+  `keys.revoke(name)` from `"pagent/server"` (a demo gives each visitor a key to its own agent, for an hour). Keys live
+  in the engine's state, as hashes: never in the app's code or data. **The key is the only thing that says who someone
+  is**; an IP address says nothing (if your app wants "anyone on my LAN", write that rule yourself with `caller.ip`).
+- **`caller`** (the second parameter): from outside, `{ kind: "external", ip, from?, key?, inReplyTo? }`: `key` is
+  `{ name, scope }` of the key it came with (none: a **stranger**), `from` the sender's own message route as its JSON
+  body says, `inReplyTo` that it is the reply to a message of ours (let in without a key, once), `remote` the remote
+  agent of this app it is (below) when that agent starts a message itself. When an agent of this app sends through the
+  route (`pagent tell`, below), `{ kind: "agent", node, agent }`. `via` lists the code it came through.
 - **`tell(agent, text, { from?, stranger?, interject?, wait? })`** (from `"pagent/server"`, in routes and actions) gives an
   agent a message, the same way a chat and `pagent tell` do (and the way a trigger's action wakes one); it says who it is from by itself. Serving a caller
-  from outside, say whom it is from: `{ from: caller.from }` (its address: the reply goes there, if verified), or
-  `{ stranger: true }` (its words reach the agent as untrusted data, and nothing goes back); without either it is
-  refused. `wait: true` (or seconds, up to 100) resolves with `{ id, reply }`; otherwise `{ id }`, and the reply goes
-  where `from` says (an agent's own call: back to that agent). A URL as the agent is another app's message route.
+  from outside: one with a key is told as itself (`{ from: caller.from }` sends the reply there; without `from`, nothing
+  goes back). One without a key: `{ stranger: true }`, and **its words never reach the agent's session**: the agent
+  answers them in a one-off turn of its own with no tools and a short answer (400 output tokens; the agent's
+  `strangers: 200` changes that, `strangers: false` answers none; Codex agents answer none), which is the `reply`, and
+  nothing else goes back. Or, if your code knows the caller its own way (a webhook's signature, your LAN rule), `{ from:
+  <its address> }` lets it in. Without either it is refused. `wait: true` (or seconds, up to 100) resolves with `{ id,
+  reply }`; otherwise `{ id }`, and the reply goes where `from` says (an agent's own call: back to that agent). A URL
+  as the agent is another app's message route.
 - **`/mcp` is the same routes as MCP tools**, made fresh on every request (stateless JSON-RPC, no handshake): one tool per
   method, named by path and method (`/api/ideas` POST is `api_ideas_post`, `[id]` is `id`), with the handler's doc comment
   and input type. `curl -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' http://…/mcp` is the app's card.
 - **An agent's address outside is its message route**, `/api/<node>/message` (the root's: `/api/message`): one agent per
   page, so the path says which. Not written, the agent takes no messages from outside (404), and the app's own agents'
   `pagent tell` tells it directly. **Written, the agent is open**, and both go through it: one line opens it with the
-  default handler, `export { inbox as POST } from "pagent/server";` in `api/<node>/message/route.ts` (a verified sender
-  is told as itself and gets the reply POSTed back; anyone else as a stranger). Write your own POST instead to decide
-  (keep it as mail in a data file, interject, refuse, tell), checking `caller` first; it takes `{ text, from }`.
-- **Messages between apps**: `pagent tell http://192.168.0.50:4880/api/message "…"` POSTs `{ text, from }` there, `from`
-  being your own message route here (filled in by the engine, at the address the connection to them uses), and gives
-  you the message's id. The reply is POSTed to that `from` as `{ text, from, inReplyTo: <id> }` and reaches you as a
-  message ("The reply to your message <id>"); **so to get it, your own message route must be open** (the one-line
-  inbox). Without it, `--wait` (up to 100 s) brings the reply back in the answer. A reply is never answered
-  automatically, so two apps do not talk forever: to go on, tell again.
+  default handler, `export { inbox as POST } from "pagent/server";` in `api/<node>/message/route.ts` (a sender with a
+  key is told as itself and gets the reply POSTed back; anyone else is a stranger: a short answer without tools, in
+  the response, and nothing in your session). Write your own POST instead to decide (keep it as mail in a data file,
+  interject, refuse, tell), checking `caller` first; it takes `{ text, from, id }`. A stranger's message still costs a
+  short turn of yours: an inbox open to the network is for people you would answer.
+- **Another app's agent: declare it, then tell it like your own.** A node (any folder with a page) declares it as a
+  **remote agent**, by the other app's node address (its page URL; `/` for its root agent), and the key that app
+  gave you for it (the name of a variable in the app's `.env`: `SAM_KEY=pk_…`; never the key itself in code):
+
+  ```tsx
+  // remote/sam/page.tsx
+  import { AgentConsole, type Agents } from "pagent";
+  export const agents = { sam: { remote: "http://sam-mac:4870/dev", key: "SAM_KEY" } } satisfies Agents;
+  export default function Page() { return <AgentConsole inline />; }
+  ```
+
+  Then it is an agent of this app: `pagent tell /remote/sam "…"` (and `tell()`, a trigger's action, a person in its
+  console) sends it there, from its own message route here, which the engine opens for it; the reply comes back to
+  whoever asked, as any agent's result does (`--wait` works too). `pagent agents` lists it, the navigation shows it
+  busy or offline (the other app does not take messages), and its page's `AgentConsole` is the conversation with it.
+  Without a key you are a stranger there (a short answer, no tools on their side). A message it starts itself comes
+  in with the key **you** gave it (`pagent key create /remote/sam --name sam`, which it names in its own remote
+  agent for you); it goes to the agent above it (as `pagent tell ..`), marked as coming from it, and that agent's
+  reply goes back to it. Anyone else at that door is a stranger. A reply to your message needs no key (it names your
+  message's id, which nobody else knows, once). For its messages, and for a reply that takes longer than 100 s, the
+  other app must reach this one: serve with `--host`. **To be reachable yourself, open your inbox** (the one line
+  above) and give the other app a key to it.
+- **A one-off message** to another app's agent: `pagent tell http://192.168.0.50:4880/api/message "…"` (its message
+  route) POSTs `{ text, from, id }`, `from` being your own message route (the engine fills it in). With no key of
+  theirs you are a stranger there: their agent's short answer comes back at once. If their own route lets you in, its
+  reply reaches you as a message ("The reply to your message <id>") **only if your own message route is open**; else
+  use `--wait` (up to 100 s). A reply is never answered automatically, so two apps do not talk forever: to go on,
+  tell again.
 
 ## The `pagent` command
 

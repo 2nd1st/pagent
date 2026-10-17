@@ -7,9 +7,11 @@
 // ([id] is id, [...path] is path; anything else not a letter or digit becomes _). Its description is the handler's doc
 // comment, then "(POST /api/ideas/message)". Its input: a typed handler's input type, plus the path's params; a raw one
 // takes the body as text (`body`; `query` for GET), plus the params. A call runs the route as an HTTP request would,
-// for a caller from outside (its address; `from` in the arguments, checked the same way).
+// for a caller from outside (its address, its key; `from` and `id` in the arguments). A request with a key sees only
+// the tools of the routes in its scope (keys.ts), and calling another is refused (403), as the route itself would be.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { engineVersion } from "./engine.ts";
+import { reaches, type KeyHolder } from "./keys.ts";
 import type { Nodes } from "./nodes.ts";
 import { bodyOf, inputError, listRoutes, outsideCaller, routeInfo, runRoute, sourceIp, tooLarge, type Handler, type Route } from "./routes.ts";
 
@@ -21,10 +23,11 @@ const paramOf = (segment: string) => /^\[(?:\.\.\.)?(\w+)\]$/.exec(segment)?.[1]
 export const toolName = (route: Route, method: string) =>
   ["api", ...route.segments.map((s) => paramOf(s) ?? s), method].join("_").toLowerCase().replace(/[^a-z0-9_]/g, "_");
 
-/** Every route method of the app, as a tool. */
-export function tools(root: string): Tool[] {
+/** Every route method of the app, as a tool (with a key: those of the routes it reaches). */
+export function tools(root: string, key: KeyHolder | null = null): Tool[] {
   const out: Tool[] = [];
   for (const route of listRoutes(root)) {
+    if (key && !reaches(key.scope, route.path)) continue;
     const { handlers, errors } = routeInfo(root, route);
     if (errors.length) continue; // a route that does not read is not offered (`pagent` and /api/** say why)
     const params = route.segments.flatMap((s) => paramOf(s) ?? []);
@@ -56,9 +59,13 @@ type Rpc = { jsonrpc?: string; id?: string | number | null; method?: string; par
 const result = (id: Rpc["id"], r: unknown) => ({ jsonrpc: "2.0", id: id ?? null, result: r });
 const failure = (id: Rpc["id"], code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
-async function call(root: string, nodes: Nodes, req: IncomingMessage, name: string, args: Record<string, unknown>) {
+/** A call to a tool the key does not reach: the request is refused (403). */
+class OutOfScope extends Error {}
+
+async function call(root: string, nodes: Nodes, req: IncomingMessage, key: KeyHolder | null, name: string, args: Record<string, unknown>) {
   const tool = tools(root).find((t) => t.name === name);
   if (!tool) return { isError: true, content: [{ type: "text", text: `no tool ${name} (tools/list has them)` }] };
+  if (key && !reaches(key.scope, tool.route.path)) throw new OutOfScope(`the key "${key.name}" is for ${key.scope}: ${name} (${tool.route.path}) is outside it`);
   const params = Object.fromEntries(tool.params.map((p) => [p, String(args[p] ?? "")]));
   const rest = Object.fromEntries(Object.entries(args).filter(([k]) => !tool.params.includes(k)));
   const path = "/" + ["api", ...tool.route.segments.map((s) => (paramOf(s) ? params[paramOf(s)!] : s))].join("/");
@@ -70,7 +77,7 @@ async function call(root: string, nodes: Nodes, req: IncomingMessage, name: stri
   const query = handler.kind === "raw" && typeof rest.query === "string" && rest.query ? `?${rest.query.replace(/^\?/, "")}` : "";
   const body = handler.kind === "raw" ? (typeof rest.body === "string" ? rest.body : undefined) : JSON.stringify(rest);
   const r = await runRoute(root, nodes, tool.route, handler, {
-    caller: await outsideCaller(sourceIp(req), rest),
+    caller: outsideCaller(root, sourceIp(req), rest, key, path),
     params,
     url: `http://${req.headers.host ?? "localhost"}${path}${query}`,
     input: handler.kind === "typed" ? rest : undefined,
@@ -86,7 +93,7 @@ async function call(root: string, nodes: Nodes, req: IncomingMessage, name: stri
   return { content: [{ type: "text", text: typeof r.value === "string" ? r.value : JSON.stringify(r.value, null, 2) }] };
 }
 
-async function answer(root: string, nodes: Nodes, req: IncomingMessage, m: Rpc): Promise<object | null> {
+async function answer(root: string, nodes: Nodes, req: IncomingMessage, key: KeyHolder | null, m: Rpc): Promise<object | null> {
   if (m.id === undefined || m.id === null) return null; // a notification (initialized, cancelled): nothing to answer
   switch (m.method) {
     case "initialize":
@@ -94,21 +101,21 @@ async function answer(root: string, nodes: Nodes, req: IncomingMessage, m: Rpc):
         protocolVersion: typeof m.params?.protocolVersion === "string" ? m.params.protocolVersion : "2025-06-18",
         capabilities: { tools: {} },
         serverInfo: { name: "pagent", version: engineVersion },
-        instructions: "This app's public routes (api/**/route.ts), one tool per method. A message to one of its agents is its message route's tool (…_message_post): give `from`, your own message route, to get its reply there.",
+        instructions: "This app's public routes (api/**/route.ts), one tool per method. A message to one of its agents is its message route's tool (…_message_post). Without a key (Authorization: Bearer) you are a stranger, answered briefly by the agent in a one-off turn; with the key the app gave you, you are told as yourself (give `from`, your own message route, to get its reply there).",
       });
     case "ping":
       return result(m.id, {});
     case "tools/list":
-      return result(m.id, { tools: tools(root).map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
+      return result(m.id, { tools: tools(root, key).map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
     case "tools/call":
-      return result(m.id, await call(root, nodes, req, String(m.params?.name ?? ""), (m.params?.arguments ?? {}) as Record<string, unknown>));
+      return result(m.id, await call(root, nodes, req, key, String(m.params?.name ?? ""), (m.params?.arguments ?? {}) as Record<string, unknown>));
     default:
       return failure(m.id, -32601, `no method ${m.method} (this server has tools/list and tools/call)`);
   }
 }
 
-/** POST /mcp: one JSON-RPC message (or a batch), answered as JSON. */
-export async function serveMcp(root: string, nodes: Nodes, req: IncomingMessage, res: ServerResponse) {
+/** POST /mcp: one JSON-RPC message (or a batch), answered as JSON. key: the one the request came with, checked. */
+export async function serveMcp(root: string, nodes: Nodes, req: IncomingMessage, res: ServerResponse, key: KeyHolder | null) {
   const send = (status: number, body?: unknown) => {
     res.writeHead(status, body === undefined ? {} : { "content-type": "application/json" });
     res.end(body === undefined ? undefined : JSON.stringify(body));
@@ -123,7 +130,18 @@ export async function serveMcp(root: string, nodes: Nodes, req: IncomingMessage,
     return send(400, failure(null, -32700, "not JSON"));
   }
   const list = Array.isArray(msg) ? msg : [msg];
-  const out = (await Promise.all(list.map((m) => answer(root, nodes, req, m).catch((e) => failure(m.id, -32603, (e as Error).message))))).filter(Boolean);
+  let refused = false;
+  const out = (
+    await Promise.all(
+      list.map((m) =>
+        answer(root, nodes, req, key, m).catch((e) => {
+          refused ||= e instanceof OutOfScope;
+          return failure(m.id, e instanceof OutOfScope ? -32003 : -32603, (e as Error).message);
+        }),
+      ),
+    )
+  ).filter(Boolean);
+  if (refused && !Array.isArray(msg)) return send(403, out[0]);
   if (!out.length) return send(202);
   send(200, Array.isArray(msg) ? out : out[0]);
 }

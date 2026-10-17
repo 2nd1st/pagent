@@ -40,7 +40,7 @@ test("by default the words are English, as they always were; the server's labels
   assert.equal(toolWord("Bash"), "Bash"); // a chip: the tool's own name
   assert.equal(toolWord("mcp__chrome-devtools__new_page"), "chrome-devtools__new_page");
   for (const a of doing) assert.equal(labelOf(a), a.label);
-  assert.equal(callerLabel({ kind: "external", ip: "1.2.3.4", verified: false }), "1.2.3.4 (a stranger)");
+  assert.equal(callerLabel({ kind: "external", ip: "1.2.3.4" }), "1.2.3.4 (a stranger)");
   // A language the table has no words for: English.
   setLanguage("fr");
   assert.equal(t("console.placeholder"), "Message, or / for commands");
@@ -79,7 +79,7 @@ test("zh-CN: what an agent is doing, the tools, the buttons and hints in plain C
   assert.equal(toolWord("mcp__chrome-devtools__new_page"), "chrome-devtools");
   assert.equal(t("console.placeholder"), "输入消息，或输入 / 使用命令");
   assert.equal(sayIn({ key: "ask.allow", values: { tool: "Bash" } }), "允许 Bash 吗？");
-  assert.equal(callerLabel({ kind: "external", ip: "1.2.3.4", verified: false }), "1.2.3.4（陌生人）");
+  assert.equal(callerLabel({ kind: "external", ip: "1.2.3.4" }), "1.2.3.4（陌生人）");
   const quiet = (ms: number) => quietNote({ busy: true, activity: "x", quietSince: Date.now() - ms, questions: [], session: {} });
   assert.equal(quiet(16 * 60_000), "已经 16 分钟没有动静，可能卡住了");
 });

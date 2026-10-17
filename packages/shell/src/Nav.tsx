@@ -32,10 +32,11 @@ export function usePages(): Page[] | null {
 
 /** An agent at a glance. */
 export type Glance = {
-  state: "idle" | "working" | "waiting";
+  /** offline: a remote agent the other app does not take messages for now (as a session that died). */
+  state: "idle" | "working" | "waiting" | "offline";
   /** Working: what it is doing right now, in a few words ("Running a command", what its TUI reports). */
   doing: string | null;
-  /** Working: the call behind it ("Bash pnpm test"), for a closer look. */
+  /** Working: the call behind it ("Bash pnpm test"), for a closer look; offline: why. */
   detail?: string | null;
   /** Waiting: the question it waits on (asked in the app, or a prompt in its terminal). */
   question: string | null;
@@ -54,6 +55,7 @@ const glanceOf = (s: AgentStatus): Glance => {
   if (asking) return { ...last, state: "waiting", doing: null, question: asking };
   const label = s.doing ? labelOf(s.doing) : s.activity; // in the app's language (i18n.ts)
   if (s.terminal?.state === "blocked") return { ...last, state: "waiting", doing: null, question: label ?? t("status.waitingTerminal") };
+  if (!s.busy && s.offline) return { ...last, state: "offline", doing: null, detail: s.offline, question: null };
   if (!s.busy) return { ...last, state: "idle", doing: null, question: null };
   const quiet = quietNote(s);
   return { ...last, state: "working", doing: [label, quiet].filter(Boolean).join(" · "), detail: s.activity, question: null };
@@ -119,7 +121,7 @@ const pageGlance = (p: Page, statuses: Map<string, Glance>): Glance | null => {
   return { ...lead, said: lead.said ?? latest.said, lastAt: latest.lastAt ?? lead.lastAt };
 };
 
-const stateText = { idle: "status.idle", working: "status.working", waiting: "status.waiting" } as const;
+const stateText = { idle: "status.idle", working: "status.working", waiting: "status.waiting", offline: "status.offline" } as const;
 
 export function Dot({ glance, unread }: { glance: Glance | null; unread?: boolean }) {
   if (!glance) return <span className="pagent-navdot" data-state="none" />;
@@ -227,7 +229,7 @@ export function Rail({ pages, statuses, current, onPick }: { pages: Page[]; stat
     const here = p.path === current;
     const saidAt = Date.parse(g?.said?.at ?? "") || 0;
     const unread = !here && !!saidAt && saidAt > (seen[p.path] ?? Infinity);
-    const now1 = g?.state === "waiting" ? g.question ?? t("status.waiting") : g?.state === "working" ? g.doing ?? t("status.working") : null;
+    const now1 = g?.state === "waiting" ? g.question ?? t("status.waiting") : g?.state === "working" ? g.doing ?? t("status.working") : g?.state === "offline" ? t("status.offline") : null;
     const when = ago(g?.lastAt ?? g?.said?.at, now);
     return (
       <a key={p.path} href={p.path} className={`pagent-railitem ${className}`} aria-current={here ? "page" : undefined} data-unread={unread || undefined} style={{ paddingLeft: 8 + depth * 14 }} onClick={onPick}>
@@ -236,7 +238,7 @@ export function Rail({ pages, statuses, current, onPick }: { pages: Page[]; stat
           <span className="pagent-railtitle">{p.title}</span>
           {when && g?.state !== "working" && <time className="pagent-railtime" dateTime={g?.lastAt ?? g?.said?.at ?? undefined} title={new Date(g?.lastAt ?? g?.said?.at ?? 0).toLocaleString()}>{when}</time>}
         </span>
-        {now1 && <span className="pagent-railnote" data-state={g!.state} title={g!.state === "working" && g!.detail && g!.detail !== now1 ? `${now1}\n${g!.detail}` : now1}>{now1}</span>}
+        {now1 && <span className="pagent-railnote" data-state={g!.state} title={(g!.state === "working" || g!.state === "offline") && g!.detail && g!.detail !== now1 ? `${now1}\n${g!.detail}` : now1}>{now1}</span>}
         {g?.said && (
           <span className="pagent-railsaid" data-asks={(g.state === "idle" && asks(g.said.text)) || undefined} title={g.said.text}>
             {g.said.text}

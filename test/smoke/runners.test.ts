@@ -4,7 +4,7 @@
 // session follows its TUI (a /clear there starts a new one).
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -39,7 +39,7 @@ describe("runners say what they do", () => {
   after(() => app.close());
 
   test("the engine's runners describe themselves; core has no names", () => {
-    assert.deepEqual(describeOf("claude-code"), { type: "describe", turns: "tui", outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] } });
+    assert.deepEqual(describeOf("claude-code"), { type: "describe", turns: "tui", outerSession: { marker: "CLAUDECODE", prefix: "CLAUDE", keep: ["CLAUDE_CONFIG_DIR", "CLAUDE_BIN"] }, strangers: true });
     assert.deepEqual(describeOf("codex"), { type: "describe", turns: "thread" });
     // Its shared service says where it runs and what of the environment it leaves out; core only does that.
     const [svc] = opOf("codex", { op: "service" });
@@ -340,4 +340,53 @@ describe("claude-code: skills and MCP servers an agent declares replace the user
     assert.equal(realpathSync(join(dir, "state", "skills", "skills", "declared")), realpathSync(join(dir, "declared")));
     assert.ok(!a.includes("--strict-mcp-config")); // per category
   });
+});
+
+test("claude-code: a stranger's answer is a claude -p of its own, without tools, session or the user's customizations, its output capped", () => {
+  // A stand-in for Claude Code: it writes down how it was started, then answers as stream-json does.
+  const dir = mkdtempSync(join(tmpdir(), "pagent-stranger-test-"));
+  const bin = join(dir, "fake-claude.mjs");
+  const seen = join(dir, "seen.json");
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+let stdin = "";
+for await (const c of process.stdin) stdin += c;
+writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), cap: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS, stdin }));
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+const said = (text) => out({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } });
+out({ type: "system", subtype: "init", session_id: "s1", model: "claude-haiku" });
+if (process.env.OVER) {
+  // Past its cap: Claude Code has the model go on, then ends with an error instead of the answer.
+  said("Once upon a time, ");
+  said("a fox");
+  out({ type: "result", subtype: "success", result: "API Error: Claude's response exceeded the 120 output token maximum.", is_error: true });
+} else {
+  said("Hello, stranger.");
+  out({ type: "result", subtype: "success", result: "Hello, stranger.", session_id: "s1", is_error: false });
+}
+`,
+  );
+  chmodSync(bin, 0o755);
+  try {
+    const input = { op: "stranger", message: "(from ip:10.0.0.9) …\n<message>\nhi\n</message>", systemPrompt: "You are answering a stranger.", maxOutputTokens: 120, options: { model: "haiku" } };
+    const chunks = opOf("claude-code", input, { CLAUDE_BIN: bin });
+    assert.equal(chunks.find((c) => c.type === "data-result")?.data.text, "Hello, stranger.");
+    const s = JSON.parse(readFileSync(seen, "utf8"));
+    const flag = (f: string) => s.args[s.args.indexOf(f) + 1];
+    assert.equal(flag("--tools"), "");
+    for (const f of ["-p", "--strict-mcp-config", "--disable-slash-commands", "--safe-mode", "--no-session-persistence", "--include-partial-messages"]) assert.ok(s.args.includes(f), f);
+    for (const f of ["--continue", "--resume", "--append-system-prompt", "--settings", "--plugin-dir", "--permission-mode"]) assert.ok(!s.args.includes(f), f);
+    assert.deepEqual([flag("--max-turns"), flag("--effort"), flag("--system-prompt"), flag("--model")], ["1", "low", "You are answering a stranger.", "haiku"]);
+    assert.equal(s.cap, "120");
+    assert.match(s.cwd, /pagent-stranger-/); // an empty folder of its own, gone afterwards
+    assert.ok(!existsSync(s.cwd));
+    assert.match(s.stdin, /<message>\nhi\n<\/message>$/);
+    // Past its cap: what was written, cut short (not Claude Code's error).
+    const over = opOf("claude-code", input, { CLAUDE_BIN: bin, OVER: "1" });
+    assert.equal(over.find((c) => c.type === "data-result")?.data.text, "Once upon a time, a fox …");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

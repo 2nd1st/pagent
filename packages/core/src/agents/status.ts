@@ -5,6 +5,7 @@ import { pendingFor } from "../questions.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
 import { isBusy, terminalOf, terminalStatus } from "../terminal.ts";
 import { keptHistory } from "./history.ts";
+import { offlineOf } from "./remote.ts";
 import { declOf } from "./runner.ts";
 import { active, activeRun, sessions, usages } from "./runs.ts";
 import { onThread } from "./thread.ts";
@@ -17,7 +18,8 @@ export const STUCK = 15 * 60_000;
  * What an agent is doing, for status UIs: a run in the app, or its open terminal (as the TUI reports it). since: when
  * its turn started; quietSince: when the last sign of it came (a step of its run, a new state of its TUI); stuck: in a
  * turn and quiet for STUCK; interject: busy, and a message sent with interject goes into its turn in progress (its
- * TUI is in one, or it is on a shared thread), not after it.
+ * TUI is in one, or it is on a shared thread), not after it. offline: a remote agent the other app does not answer for
+ * (why), shown as a session that died.
  */
 export function agentStatus(ref: AgentRef) {
   const run = activeRun(ref);
@@ -40,6 +42,7 @@ export function agentStatus(ref: AgentRef) {
     questions: pendingFor(ref),
     session: { slashCommands, model, ...(usage !== undefined ? { usage } : {}) },
     terminal,
+    offline: offlineOf(ref),
   };
 }
 

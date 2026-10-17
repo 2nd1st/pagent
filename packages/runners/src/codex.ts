@@ -19,6 +19,8 @@
 //   { op: "usage", cwd, stateDir, thread? } → {type:"usage", usage, file}: the thread's token use (lib/usage.ts), from its
 //     rollout; the session says the same, live, before each turn-end as a data-usage chunk
 //   { op: "describe" } → {type:"describe", turns: "thread"}: what the core goes by (agents.ts, Capabilities)
+//     It does not say `strangers` (SPEC 13.7): Codex has no turn without tools (its shell is always there; even the
+//     read-only sandbox reads the disk), so a Codex agent answers no strangers.
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";

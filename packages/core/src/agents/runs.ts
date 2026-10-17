@@ -11,6 +11,7 @@ import { keyOf, type AgentRef } from "../refs.ts";
 import type { AgentDecl } from "../extract.ts";
 import { driverFor, driverOf, drivers, type SessionDriver } from "./driver.ts";
 import { forget, watchAfter } from "./history.ts";
+import { answered } from "./remote.ts";
 import { agentDecl, runnerScript } from "./runner.ts";
 import { noteStuck, subagentActivity, subagentDoing, toolActivity, toolDoing, type Activity, type SubagentLine } from "./status.ts";
 import type { AskInput, Conflict, Ctx, ReplyPost, Run, SessionInfo } from "./types.ts";
@@ -90,7 +91,7 @@ function runEnded(ctx: Ctx, run: Run, push: Push, text: string, how: RunFor) {
   // An unattended run's result carries on what the trigger started: nobody is there for that run either.
   const alone = run.unattended ? { unattended: true } : {};
   if (replyTo) void ask(ctx, { ...replyTo, message: `${resultOf(ref, run.id)}\n${text || "(no reply)"}`, caller: { kind: "agent", ...ref }, ...alone }).catch((e) => console.warn(`could not report back to ${keyOf(replyTo)}: ${(e as Error).message}`));
-  if (replyPost) void postReply(ctx, replyPost, text, run.id).catch((e) => console.warn(`${keyOf(ref)}: could not send the reply to ${replyPost.url}: ${(e as Error).message}`));
+  if (replyPost) void postReply(ctx, replyPost, text, run.id, ref).catch((e) => console.warn(`${keyOf(ref)}: could not send the reply to ${replyPost.url}: ${(e as Error).message}`));
 }
 
 /** The head of a delegation's result: which agent, and which message of the delegating agent's it answers. */
@@ -101,11 +102,12 @@ export type RunFor = { chain?: AgentRef[]; clientId?: string; replyTo?: AgentRef
 
 /**
  * The result of a run for someone outside, to the address it gave: { text, from: our message route for the agent,
- * inReplyTo: the message it answers }. A reply is never answered automatically (tell.ts), so this ends there.
+ * inReplyTo: the message it answers (the sender's id for it, or ours) }. A reply is never answered automatically (tell.ts), so this ends there.
  */
-export async function postReply(ctx: Ctx, to: ReplyPost, text: string, inReplyTo: string) {
-  const r = await postOut(to.url, Number(new URL(ctx.baseUrl).port), to.path, { text: text || "(no reply)", inReplyTo }, 30_000);
+export async function postReply(ctx: Ctx, to: ReplyPost, text: string, inReplyTo: string, by: AgentRef) {
+  const r = await postOut(to.url, Number(new URL(ctx.baseUrl).port), to.path, { text: text || "(no reply)", inReplyTo: to.inReplyTo ?? inReplyTo }, 30_000);
   if (r.status >= 300) throw new Error(`${r.status} ${r.body.slice(0, 200)}`);
+  answered(ctx, to, text, by); // to a remote agent of ours: in its conversation
 }
 
 /**
@@ -205,7 +207,7 @@ export async function startRun(ctx: Ctx, input: AskInput, opts: StartOptions = {
   let found: [AgentDecl, SessionDriver];
   try {
     const decl = await agentDecl(ctx, ref);
-    runnerScript(decl.runner);
+    if (decl.remote === undefined) runnerScript(decl.runner); // a remote agent has no runner here
     found = [decl, await driverOf(decl)];
   } catch (e) {
     drop(ctx.root, letter.id); // it can never be delivered

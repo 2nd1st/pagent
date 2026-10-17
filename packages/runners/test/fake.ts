@@ -2,7 +2,7 @@
 // A runner for tests: the runner contract (runners/src/claude-code.ts) without a harness, a model or a network. Its
 // sessions are transcripts it keeps itself (<stateDir>/transcript.jsonl, and one more per /clear in its TUI), so
 // history, last words and the transcript watcher work as with a real harness. Declare it with the script's path: agents = { bot: { runner: "/…/fake.ts" } }.
-// It says nothing about itself (no "describe"), so its turns are headless; fake-tui.ts is the same runner with a TUI,
+// Its describe says nothing about its turns (only that it answers strangers), so they are headless; fake-tui.ts is the same runner with a TUI,
 // fake-thread.ts the same on a shared thread (a long-lived session the TUI is one more client of).
 //
 // What it does in a turn is written in the message, one step per line starting with "!" (anything else is just text):
@@ -23,6 +23,8 @@
 // Another process holding its session: <stateDir>/holder.json ({ pid, name? }), what its "holder" op then reports.
 // With no !say / !slow / !sh step the reply is "echo: <message>". In the TUI, Esc stops the turn, and a message typed
 // while it runs is taken in before its next step (or, typed after the last one, is the next turn).
+// A stranger's one-off answer (the "stranger" op, SPEC 13.7): no steps run (it has no tools), nothing is written to a
+// session; the reply says what it was asked for: "(one-off, no tools, at most <cap> tokens, as a stranger) echo: <words>".
 // Its usage (the "usage" op, and a data-usage chunk at the end of each turn): 1000 tokens of context per message in the
 // session, 10 of output per reply, a window of 200k.
 import { exec } from "node:child_process";
@@ -202,6 +204,17 @@ function usageOf(input: Input) {
   if (!all.length) return null;
   const replies = all.filter((e) => e.type === "assistant").length;
   return { context: all.length * 1000, window: 200_000, input: all.length * 1000, cacheRead: 0, cacheWrite: 0, output: replies * 10, compactions: 0, requests: replies, model: "fake", at: all.at(-1)!.at };
+}
+
+/** A stranger's answer: what it was asked for, and the stranger's words (from inside the caller line's <message>). */
+function stranger(input: Input & { systemPrompt?: string; maxOutputTokens?: number }) {
+  const words = /<message>\n([\s\S]*)\n<\/message>$/.exec(input.message ?? "")?.[1] ?? input.message ?? "";
+  const told = /stranger/.test(input.systemPrompt ?? "") && /by a stranger \(no key\)/.test(input.message ?? "");
+  const text = `(one-off, no tools, at most ${input.maxOutputTokens} tokens${told ? ", as a stranger" : ""}) echo: ${words}`;
+  const id = randomUUID();
+  for (const c of [{ type: "start" }, { type: "text-start", id }, { type: "text-delta", id, delta: text }, { type: "text-end", id }]) out(c);
+  out({ type: "data-result", data: { text }, transient: true });
+  out({ type: "finish" });
 }
 
 async function ask(input: Input) {
@@ -478,7 +491,9 @@ else {
   else if (input.op === "usage") out({ type: "usage", usage: usageOf(input), file: existsSync(transcript(input)) ? transcript(input) : null });
   else if (input.op === "info") out({ type: "info", sessionId: sessionOf(input), resume: null });
   else if (input.op === "holder") out({ type: "holder", holder: holderOf(input), choices: [] });
-  else if (input.op === "describe" && TURNS) out({ type: "describe", turns: TURNS });
+  // It answers strangers (and says nothing about its turns when they are headless).
+  else if (input.op === "describe") out({ type: "describe", ...(TURNS ? { turns: TURNS } : {}), strangers: true });
+  else if (input.op === "stranger") stranger(input);
   else if (input.op === "interactive" && TURNS === "tui") out({ type: "command", command: process.execPath, args: [self, "--tui", input.stateDir, sessionOf(input)], cwd: input.cwd, env: input.env, keys: { interrupt: ["\x1b"], allow: ["1"], deny: ["\x1b"] } });
   else if (input.op === "interactive" && TURNS === "thread") out({ type: "command", command: process.execPath, args: [self, "--thread-tui", input.stateDir, sessionOf(input)], cwd: input.cwd, env: input.env });
   else if (input.op === "interactive") out({ type: "command", command: "/bin/cat", args: [], cwd: input.cwd });

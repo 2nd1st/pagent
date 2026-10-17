@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import { inChain, NOBODY, startRun, stopTurn, unattended, type AgentRef, type Ctx } from "../agents.ts";
 import { drop, keep, letters, type MessageLetter, type QuestionLetter } from "../inbox.ts";
 import { scrub, intoTarget } from "../into.ts";
-import { isUrl } from "../outside.ts";
+import { isUrl, messagePath } from "../outside.ts";
 import { askUser, type Form } from "../questions.ts";
 import { keyOf } from "../refs.ts";
 import { inputError, messageRoute, routeInfo, runRoute, type Route } from "../routes.ts";
-import { agentAbove, inboxOpen, messagePath, tell } from "../tell.ts";
+import { agentAbove, inboxOpen, tell } from "../tell.ts";
 import { normPath } from "../tree.ts";
 import { flagValue } from "./args.ts";
 import { agentArg, directory, json, seconds, within, type Command } from "./common.ts";
@@ -78,7 +78,7 @@ export async function restoreQuestions(ctx: Ctx) {
 export const agentsCommand: Command = {
   name: "agents",
   usage: "",
-  about: "The other agents of the app: address (for `pagent tell`), runner, folder, busy (what it does, how long it has been quiet, stuck: quiet 15 min or more).",
+  about: "The other agents of the app: address (for `pagent tell`), runner, folder, busy (what it does, how long it has been quiet, stuck: quiet 15 min or more); a remote agent (another app's, declared here): where it is, and offline when that app does not take messages for it now.",
   run: async ({ ctx, me }) => json((await directory(ctx)).filter((a) => a.address !== keyOf(me))),
 };
 
@@ -87,7 +87,8 @@ export const tellCommand: Command = {
   usage: "<agent | .. | URL> <message> [--wait[=seconds]] [--interject]",
   about: "Message another agent: of this app (an address from `pagent agents`, e.g. /ops#ops), the nearest one above you (..: the agent whose part of the app yours is in, to hand something up), or of another app (its message route, e.g. http://192.168.0.50:4880/api/message). It delegates: the reply comes to you later as a message. --wait: wait for the reply (up to 100 s; after that it comes as a message). --interject: if it is in a turn, into that turn (it reads it between two steps), not after it.",
   more:
-    "To another app, the message says it is from you: your own message route here (api/<your node>/message), which is where its reply is POSTed. So for that reply to reach you, your inbox must be open: api/<your node>/message/route.ts, one line: export { inbox as POST } from \"pagent/server\". Without it, use --wait: the reply comes back in the answer. " +
+    "Another app's agent you talk to more than once: declare it as a remote agent of this app (a node whose page has agents = { sam: { remote: \"http://sam-mac:4870/dev\", key: \"SAM_KEY\" } }, the other app's node address, and the name of the variable in the app's .env holding the key that app gave you), then tell it as any agent here (pagent tell /sam): its reply comes back to you as a result, with no inbox of yours to open. " +
+    "To another app by URL you have no key of theirs, so you are a stranger there: its agent answers briefly, without tools, and that answer comes back here at once. " +
     "To an agent of this app whose message route the app wrote, the message goes through that route, which decides what happens to it.",
   flags: { wait: "bool", interject: "bool" },
   // The same tell() as server code's (tell.ts), for this agent: the reply comes back to it.
