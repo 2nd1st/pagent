@@ -12,5 +12,7 @@ export default defineConfig({
     // a page on its own plane only when the page's origin is the address it was reached at (server.ts, originOk),
     // through here this dev server's. With changeOrigin, every request of the shell would be refused.
     proxy: { "/_pagent": { target: server, ws: true }, "/api": server, "/mcp": server },
+    // Only the app's own pages may frame it, as the server says for the built shell (server.ts, FRAMING).
+    headers: { "content-security-policy": "frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN" },
   },
 });

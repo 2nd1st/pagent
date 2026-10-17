@@ -66,12 +66,20 @@ function sendEncoded(req: IncomingMessage, res: ServerResponse, headers: Record<
 
 const TYPES: Record<string, string> ={ ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json" };
 
+/** Only the app's own pages may show it in a frame: framed by another site's page, the app's buttons (Allow on a
+ *  permission, an action's) could sit under that page's own, and the user's click would be the app's (clickjacking). */
+const FRAMING = { "content-security-policy": "frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN" };
+
 /** A file of the built shell, or its index.html for any route (the shell routes on the client). */
 function serveShell(res: ServerResponse, pathname: string) {
   const file = normalize(join(engine.shell, decodeURIComponent(pathname)));
   const asset = file.startsWith(engine.shell + sep) && existsSync(file) && statSync(file).isFile();
   const path = asset ? file : join(engine.shell, "index.html");
-  res.writeHead(200, { "content-type": TYPES[extname(path)] ?? "application/octet-stream", "cache-control": asset && pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache" });
+  res.writeHead(200, {
+    "content-type": TYPES[extname(path)] ?? "application/octet-stream",
+    "cache-control": asset && pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache",
+    ...(path.endsWith(".html") ? FRAMING : {}),
+  });
   res.end(readFileSync(path));
 }
 
