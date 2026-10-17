@@ -171,6 +171,32 @@ function send(res: ServerResponse, status: number, body: unknown, headers: Recor
   res.end(JSON.stringify(body));
 }
 
+/** The most a request to the app's public face may send (its routes, /mcp): the body is held whole before it runs. */
+export const MAX_BODY = 10 * 1024 * 1024;
+
+/**
+ * A request's body, or null when it is over MAX_BODY: by its Content-Length, before a byte is kept, or as it comes. The
+ * caller answers 413; the rest is read and dropped, so the sender, still sending, gets that answer (closed on, it
+ * would see a broken connection instead).
+ */
+export function bodyOf(req: IncomingMessage): Promise<Buffer | null> {
+  return new Promise((resolve, reject) => {
+    if (Number(req.headers["content-length"]) > MAX_BODY) return (req.resume(), resolve(null));
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size <= MAX_BODY) return void chunks.push(c);
+      req.removeAllListeners("data").resume();
+      resolve(null);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+export const tooLarge = `the body is over ${MAX_BODY / 1024 / 1024} MB, the most this app takes`;
+
 /** The request's source address. */
 export const sourceIp = (req: IncomingMessage) => (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
 
@@ -199,9 +225,8 @@ export async function serveRoute(root: string, nodes: Nodes, req: IncomingMessag
   if (errors.length) return send(res, 500, { error: errors.join("\n") });
   const handler = handlers.find((h) => h.method === req.method);
   if (!handler) return send(res, 405, { error: `${url.pathname} takes ${handlers.map((h) => h.method).join(", ") || "no method"}` }, { allow: handlers.map((h) => h.method).join(", ") });
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
-  const raw = Buffer.concat(chunks);
+  const raw = await bodyOf(req);
+  if (!raw) return send(res, 413, { error: tooLarge });
   let json: unknown;
   let bad = false;
   if (raw.length) {

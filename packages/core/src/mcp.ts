@@ -11,7 +11,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { engineVersion } from "./engine.ts";
 import type { Nodes } from "./nodes.ts";
-import { inputError, listRoutes, outsideCaller, routeInfo, runRoute, sourceIp, type Handler, type Route } from "./routes.ts";
+import { bodyOf, inputError, listRoutes, outsideCaller, routeInfo, runRoute, sourceIp, tooLarge, type Handler, type Route } from "./routes.ts";
 
 type Tool = { name: string; description: string; inputSchema: Record<string, unknown>; route: Route; handler: Handler; params: string[] };
 
@@ -114,11 +114,11 @@ export async function serveMcp(root: string, nodes: Nodes, req: IncomingMessage,
     res.end(body === undefined ? undefined : JSON.stringify(body));
   };
   if (req.method !== "POST") return send(405, failure(null, -32000, "POST JSON-RPC messages here (stateless: no stream, no session)"));
-  const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  const raw = await bodyOf(req);
+  if (!raw) return send(413, failure(null, -32600, tooLarge));
   let msg: Rpc | Rpc[];
   try {
-    msg = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    msg = JSON.parse(raw.toString("utf8"));
   } catch {
     return send(400, failure(null, -32700, "not JSON"));
   }
