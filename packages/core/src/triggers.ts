@@ -8,8 +8,10 @@
 // Watch, without losing changes or looping: a change while the trigger runs marks it dirty, and it runs once more
 // when it ends (the action then finds nothing new and stops by itself). Changes that arrive after a run are compared
 // with the files as that run left them, so late echoes of its own writes do not start it again. Re-runs in a row are
-// capped (MAX_RERUNS). An agent the action tells is not waited for: if it writes the watched file, that is a change
-// like any other, and the action decides again (so it tells only when there is something new).
+// capped (MAX_RERUNS): after them, a change during the run waits RERUN_PAUSE and runs it once more (the last change of
+// a burst is not lost), and a change during that run too is left for the next change (an action that changes what it
+// watches on every run stops). An agent the action tells is not waited for: if it writes the watched file, that is a
+// change like any other, and the action decides again (so it tells only when there is something new).
 import { runAction, valueText } from "./actions.ts";
 import { axModule } from "./ax-module.ts";
 import { endTurn } from "./quit.ts";
@@ -26,11 +28,13 @@ type Watched = { node: string; pattern: string };
 export type TriggerRun = { at: string; why: string; result: string };
 
 let armed: Armed[] = [];
-let timers: NodeJS.Timeout[] = []; // the `every` ones
+const timers = new Map<string, { sig: string; timer: NodeJS.Timeout }>(); // node#name → its `every` timer
 const running = new Map<string, Promise<string>>(); // what each running trigger will result in
 const dirty = new Set<string>(); // its watched files changed while it ran
 const seen = new Map<string, string>(); // its watched files as its last run left them
+const paused = new Map<string, NodeJS.Timeout>(); // its run once more after MAX_RERUNS, waiting
 const MAX_RERUNS = 3;
+const RERUN_PAUSE = Number(process.env.PAGENT_RERUN_PAUSE_MS) || 10_000; // tests make it short
 const last = new Map<string, TriggerRun>();
 const failed = new Map<string, string>(); // its action's last failure (first line), while it keeps failing
 const keyOf = (node: string, name: string) => `${node}#${name}`;
@@ -48,11 +52,24 @@ async function arm(ctx: Ctx) {
     }
   }
   armed = next;
-  for (const t of timers) clearInterval(t);
-  // A tick while the last run still goes is skipped (fire never overlaps a trigger with itself). An app trigger's
-  // `every` is its fallback: it polls only while the app cannot be watched.
-  timers = next.filter((a) => a.decl.every && !a.decl.app).map((a) => setInterval(() => void fire(ctx, a, `every ${a.decl.every}`), everyMs(a.decl.every!)!));
+  armTimers(ctx, next);
   armApps(ctx, next);
+}
+
+// A tick while the last run still goes is skipped (fire never overlaps a trigger with itself). An app trigger's
+// `every` is its fallback: it polls only while the app cannot be watched. A timer is made again only when its trigger's
+// declaration changed: every edit of the app re-arms, and a countdown started over on each would never come round in
+// an app being worked on (an `every: "30m"`).
+function armTimers(ctx: Ctx, next: Armed[]) {
+  const want = new Map(next.filter((a) => a.decl.every && !a.decl.app).map((a) => [keyOf(a.node, a.decl.name), a]));
+  const sig = (a: Armed) => JSON.stringify(a.decl);
+  for (const [k, t] of timers) {
+    const a = want.get(k);
+    if (a && sig(a) === t.sig) continue;
+    clearInterval(t.timer);
+    timers.delete(k);
+  }
+  for (const [k, a] of want) if (!timers.has(k)) timers.set(k, { sig: sig(a), timer: setInterval(() => void fire(ctx, a, `every ${a.decl.every}`), everyMs(a.decl.every!)!) });
 }
 
 // ---------------------------------------------------------------- app: the bridge's app changed
@@ -119,6 +136,8 @@ export function appWatch(node: string, name: string): string | null {
 function fire(ctx: Ctx, a: Armed, why: string, rerun = 0): Promise<string> {
   const key = keyOf(a.node, a.decl.name);
   if (running.has(key)) return Promise.resolve(`Trigger ${key} is still running; skipped.`);
+  clearTimeout(paused.get(key)); // this run sees the change it waited for
+  paused.delete(key);
   const result = run(ctx, a, why, rerun);
   running.set(key, result);
   return result;
@@ -149,8 +168,17 @@ async function run(ctx: Ctx, a: Armed, why: string, rerun: number): Promise<stri
     last.set(key, { at: new Date().toISOString(), why, result: result.slice(0, 500) });
     if (a.watch) seen.set(key, fingerprint(ctx, a.watch));
     if ((a.watch || decl.app) && dirty.delete(key)) {
-      if (rerun < MAX_RERUNS) void fire(ctx, a, `${a.watch ? "watch" : "app"} (changed while running)`, rerun + 1);
-      else console.error(`trigger ${key}: changed during ${MAX_RERUNS + 1} runs in a row; waiting for the next change`);
+      const again = `${a.watch ? "watch" : "app"} (changed while running)`;
+      if (rerun < MAX_RERUNS) void fire(ctx, a, again, rerun + 1);
+      else if (rerun === MAX_RERUNS) {
+        console.error(`trigger ${key}: changed during ${MAX_RERUNS + 1} runs in a row; once more in ${RERUN_PAUSE / 1000} s`);
+        const once = () => {
+          paused.delete(key);
+          const now = armed.find((x) => keyOf(x.node, x.decl.name) === key); // as declared by then
+          if (now) void fire(ctx, now, `${again}, after a pause`, rerun + 1);
+        };
+        paused.set(key, setTimeout(once, RERUN_PAUSE));
+      } else console.error(`trigger ${key}: changed during its run after the pause too; waiting for the next change`);
     }
   }
 }
