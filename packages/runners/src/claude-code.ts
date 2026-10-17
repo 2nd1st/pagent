@@ -659,10 +659,11 @@ function alive(pid: number) {
     return (e as NodeJS.ErrnoException).code === "EPERM";
   }
 }
-/** The registry records the start time as `ps -o lstart` prints it in UTC. */
+/** The registry records the start time as `ps -o lstart` prints it in UTC, in the C locale ("Fri Oct 16 …"). */
 function procStart(pid: number): string {
   try {
-    return norm(execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, TZ: "UTC" }, encoding: "utf8" }));
+    // LC_ALL=C: other locales print it otherwise ("Fri 16 Oct …" in en_AU), and every live process would look reused.
+    return norm(execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { env: { ...process.env, TZ: "UTC", LC_ALL: "C" }, encoding: "utf8" }));
   } catch {
     return "";
   }
