@@ -289,6 +289,15 @@ describe("claude-code: what the app's root forbids holds for every agent of the 
     writeFileSync(join(app, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Read(/drafts/**)"] } }));
     assert.deepEqual(settingsOf(node, {}, { appRoot: app }).deny, [`Read(/${app}/drafts/**)`]);
   });
+
+  test("a root with a wildcard in its path: escaped, so the rule is still the root's", () => {
+    const odd = join(root, "odd[1]*?");
+    mkdirSync(join(odd, ".claude"), { recursive: true });
+    mkdirSync(join(odd, "n"));
+    writeFileSync(join(odd, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Read(/secrets/**)", "Read(.env)"] } }));
+    const escaped = `${root}/odd\\[1\\]\\*\\?`; // as .gitignore escapes them
+    assert.deepEqual(settingsOf(join(odd, "n"), {}, { appRoot: odd }).deny, [`Read(/${escaped}/secrets/**)`, `Read(/${escaped}/**/.env)`]);
+  });
 });
 
 describe("claude-code: skills and MCP servers an agent declares replace the user's", () => {
