@@ -112,10 +112,13 @@ function refused(req: IncomingMessage, url: URL): string | null {
     }
   }
   // No Origin: a local process, a same-origin GET, or a cross-site GET (an <img>, a link). A plain link to a
-  // page is fine; anything else from another site is not.
+  // page is fine; anything else from another site is not. Nor, but on the public face, from a page at another port of
+  // this machine: its fetch is refused by its Origin (above), but its <img> sends none, and a browser calls it the same
+  // site (a site has no port). Such a GET could still fork a node.
   const site = req.headers["sec-fetch-site"];
   const page = req.headers["sec-fetch-mode"] === "navigate" && req.method === "GET" && !/^\/(_pagent|_cli|api|mcp)(\/|$)/.test(url.pathname);
-  return site === "cross-site" && !page ? "cross-site request" : null;
+  const foreign = site === "cross-site" || (site === "same-site" && !PUBLIC.test(url.pathname));
+  return foreign && !page ? `${site} request` : null;
 }
 
 export function startServer(opts: ServerOptions) {
