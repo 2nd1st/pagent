@@ -23,7 +23,7 @@ export default function Home() {
           {pins.map((p) => (
             <span key={p.href} style={{ display: "inline-flex", alignItems: "center", gap: 2, padding: "2px 2px 2px 10px", borderRadius: 999, border: "1px solid var(--pagent-border)", background: "var(--pagent-surface)", fontSize: 13 }}>
               <a href={p.href} style={{ textDecoration: "none" }}>{p.title}</a>
-              <button className="pagent-ghost" onClick={() => void unpin(p.href)} title="Unpin" style={{ padding: "0 6px", borderRadius: 999 }}>×</button>
+              <button className="pagent-ghost" onClick={() => void unpin(p.href)} title="__UNPIN__" style={{ padding: "0 6px", borderRadius: 999 }}>×</button>
             </span>
           ))}
         </nav>
@@ -31,7 +31,7 @@ export default function Home() {
       <AgentConsole
         inline
         style={{ flex: 1, height: "auto", minHeight: 0 }}
-        empty="Ask me anything, or tell me what you would like this app to do for you."
+        empty="__EMPTY__"
       />
     </div>
   );

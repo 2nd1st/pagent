@@ -3,6 +3,7 @@
 // agent.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { HostContext, propsFromQuery, provideHost, QuestionCard, type Question } from "@pagent/bridge";
+import { setLanguage, t, tWith, useLanguage } from "@pagent/bridge/i18n";
 import { api, createHost, httpLoader, onHostEvent, qs } from "./host.ts";
 import { McpAppFrame } from "./McpAppFrame.tsx";
 import { TerminalView } from "./TerminalView.tsx";
@@ -11,6 +12,27 @@ import { go } from "./nav.ts";
 import { Crumbs, notifyChange, Rail, useDocumentTitle, useNotifySetting, usePages, useStatuses, type Page } from "./Nav.tsx";
 
 type RouteEntry = { path: string; file: "page" | "layout" };
+
+// The engine's words are in the app's language, its home page's metadata.lang (i18n.ts): as this browser last saw it
+// until the pages come, so a reload does not start in English.
+const LANG_KEY = "pagent.lang";
+try {
+  setLanguage(localStorage.getItem(LANG_KEY));
+} catch {}
+
+/** The app's language, from its pages (null: it declares none), said to the engine's words and remembered here. */
+function useAppLanguage(pages: Page[] | null) {
+  const lang = pages ? (pages.find((p) => p.path === "/")?.lang ?? null) : undefined;
+  useEffect(() => {
+    if (lang === undefined) return; // not known yet
+    setLanguage(lang);
+    try {
+      if (lang) localStorage.setItem(LANG_KEY, lang);
+      else localStorage.removeItem(LANG_KEY);
+    } catch {}
+  }, [lang]);
+  useLanguage();
+}
 
 /** The page's path, and its query: the page's props (`/weather?city=Lisbon` renders /weather with city="Lisbon"). */
 function useLocation(): { path: string; search: string; depth: number } {
@@ -47,7 +69,7 @@ function RouteView({ path, search }: { path: string; search: string }) {
 
   const props = useMemo(() => propsFromQuery(search), [search]);
   if (chain === null) return null;
-  if (chain === "missing") return <div className="pagent-empty">No node at <code>{path}</code>.</div>;
+  if (chain === "missing") return <div className="pagent-empty">{tWith("app.missing", {}, "path", <code key="path">{path}</code>)}</div>;
   return (
     <>
       {chain.reduceRight<ReactNode>(
@@ -84,7 +106,7 @@ function PermissionPrompts({ pages }: { pages: Page[] | null }) {
   const shown = pending.filter((q) => !inView.has(`${q.node}#${q.agent}`));
   if (!shown.length) return null;
   return (
-    <div className="pagent-permissions" role="region" aria-label="Requests from agents">
+    <div className="pagent-permissions" role="region" aria-label={t("app.requests")}>
       {shown.map((q) => (
         <div key={q.id} className="pagent-permission">
           <QuestionCard question={q} from={pages?.find((p) => p.path === q.node)?.title ?? q.node} />
@@ -170,6 +192,7 @@ export function App() {
     return h;
   }, []);
   const pages = usePages();
+  useAppLanguage(pages);
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
   const statuses = useStatuses(pages, (key, before, after) => notifyChange(key, before, after, pagesRef.current));
@@ -191,14 +214,14 @@ export function App() {
           <div className="pagent-content">
             <header className="pagent-top" data-pagent-chrome>
               {hasRail && (
-                <button className="pagent-icon pagent-railbutton" title={railOpen ? "Hide pages" : "Pages"} aria-pressed={railOpen} onClick={() => setRail()}>
+                <button className="pagent-icon pagent-railbutton" title={t(railOpen ? "app.hidePages" : "app.pages")} aria-pressed={railOpen} onClick={() => setRail()}>
                   <Icon d={RAIL_ICON} />
                   {/* The rail closed (a phone): whether an agent waits for you or works stays visible on its button. */}
                   {!showRail && busiest && <span className="pagent-navdot" data-state={busiest} />}
                 </button>
               )}
               {depth > 0 && (
-                <button className="pagent-icon" title="Back" onClick={() => history.back()}>
+                <button className="pagent-icon" title={t("app.back")} onClick={() => history.back()}>
                   <Icon d={BACK_ICON} />
                 </button>
               )}
@@ -209,13 +232,7 @@ export function App() {
                   className="pagent-icon pagent-bell"
                   data-on={notify === "on"}
                   disabled={notify === "denied"}
-                  title={
-                    notify === "denied"
-                      ? "Notifications are blocked for this site in the browser's settings"
-                      : notify === "on"
-                        ? "Notifying you when an agent finishes or needs you while you are elsewhere (click to stop)"
-                        : "Notify me when an agent finishes or needs me while I am elsewhere"
-                  }
+                  title={t(notify === "denied" ? "app.notifyBlocked" : notify === "on" ? "app.notifyOn" : "app.notifyOff")}
                   onClick={toggleNotify}
                 >
                   <Icon d={BELL_ICON} />

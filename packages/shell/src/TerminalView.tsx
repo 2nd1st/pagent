@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { t, useLanguage } from "@pagent/bridge/i18n";
 import { qs } from "./host.ts";
 
 const token = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -24,6 +25,7 @@ function theme() {
 type Conflict ={ holder: { pid: number; name?: string; startedAt?: string }; choices: ("fork" | "open")[] };
 
 export function TerminalView({ target, style }: { target: { node: string; agent: string }; style?: CSSProperties }) {
+  useLanguage();
   const box = useRef<HTMLDivElement>(null);
   // Another process has the session open: the server opens nothing until the user picks what to do.
   const [conflict, setConflict] = useState<Conflict | null>(null);
@@ -93,13 +95,14 @@ export function TerminalView({ target, style }: { target: { node: string; agent:
       {conflict && (
         <div className="pagent-terminal-conflict">
           <p>
-            This session is already open in another process (PID {conflict.holder.pid}
-            {conflict.holder.name ? `, "${conflict.holder.name}"` : ""}). Two processes on one session would mix up its history.
+            {conflict.holder.name
+              ? t("terminal.conflictNamed", { pid: conflict.holder.pid, name: conflict.holder.name })
+              : t("terminal.conflict", { pid: conflict.holder.pid })}
           </p>
           <div className="pagent-terminal-choices">
-            {conflict.choices.includes("fork") && <button onClick={() => reopen.current("fork")}>Fork a copy</button>}
-            <button onClick={() => reopen.current()}>I closed it, retry</button>
-            {conflict.choices.includes("open") && <button className="pagent-quiet" onClick={() => reopen.current("open")}>Open anyway</button>}
+            {conflict.choices.includes("fork") && <button onClick={() => reopen.current("fork")}>{t("terminal.fork")}</button>}
+            <button onClick={() => reopen.current()}>{t("terminal.retry")}</button>
+            {conflict.choices.includes("open") && <button className="pagent-quiet" onClick={() => reopen.current("open")}>{t("terminal.open")}</button>}
           </div>
         </div>
       )}

@@ -7,7 +7,7 @@ import type { UIMessage } from "ai";
 import { DataConflict, type AgentEvent, type AgentRef, type HostApi } from "./contract.ts";
 import { instanceDir } from "./instance.ts";
 
-export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type RateLimit, type SessionUsage, type SubagentInfo } from "./contract.ts";
+export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type RateLimit, type Say, type SessionUsage, type SubagentInfo } from "./contract.ts";
 export type { Agents, AgentSpec, Config, McpServer, Tools, Triggers } from "./declarations.ts";
 
 export const HostContext = createContext<HostApi | null>(null);

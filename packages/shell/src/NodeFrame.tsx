@@ -2,6 +2,7 @@
 // How nodes are loaded is a NodeLoader (host.ts: HTTP + SSE).
 import { Component, createContext, useContext, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { ScopeContext, type AgentRef, type Scope } from "@pagent/bridge";
+import { t, tWith, useLanguage } from "@pagent/bridge/i18n";
 
 export type NodeLoader = {
   node(path: string, from?: string): Promise<NodeInfo>;
@@ -29,7 +30,7 @@ class Boundary extends Component<{ path: string; children: ReactNode }, { error:
     if (this.state.error) {
       return (
         <div className="pagent-error">
-          <strong>{this.props.path}</strong> failed to render
+          {tWith("frame.failed", {}, "path", <strong key="path">{this.props.path}</strong>)}
           <pre>{this.state.error.message}</pre>
         </div>
       );
@@ -53,6 +54,7 @@ export function NodeFrame({
   handlers?: Record<string, unknown>;
   children?: ReactNode;
 }) {
+  useLanguage();
   const parent = useContext(ScopeContext);
   const loader = useContext(LoaderContext)!;
   const [info, setInfo] = useState<NodeInfo | null>(null);
@@ -109,13 +111,13 @@ export function NodeFrame({
       {info?.notes?.map((n) => <div key={n} className="pagent-note">{n}</div>)}
       <ScopeContext.Provider value={scope}>
         {info && !info.files.includes(file) ? (
-          <div className="pagent-muted pagent-missing">no {file}.tsx at {path}</div>
+          <div className="pagent-muted pagent-missing">{t("frame.noFile", { file, path })}</div>
         ) : mod ? (
           <Boundary key={mod.version} path={path}>
             <mod.Comp {...props}>{children}</mod.Comp>
           </Boundary>
         ) : (
-          !error && <div className="pagent-muted">loading {path}…</div>
+          !error && <div className="pagent-muted">{t("frame.loading", { path })}</div>
         )}
       </ScopeContext.Provider>
     </div>

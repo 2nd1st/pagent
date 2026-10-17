@@ -62,6 +62,8 @@ export type Extracted = {
   title?: string;
   /** Where navigation lists it among its siblings (`metadata.order`, lower first); unordered pages follow, by title. */
   order?: number;
+  /** The language it is written in (`metadata.lang`, "zh-CN"): the home page's is the app's, and the engine's words follow it. */
+  lang?: string;
   errors: string[];
 };
 export type Manifest = Omit<Extracted, "errors">;
@@ -256,7 +258,7 @@ export function analyze(
   //   export const tools   = { select_day: { description: "…", input: { day: "string" } } }   (useTool implements it)
   //   export const triggers = { check: { cron: "*/10 * * * *", run: "status" } }   (also every: "10s", watch: "file" or "~/node/file", app: true)
   //   export const config  = { shared: true, app: "Calculator", quit: "after", skills: [ … ], mcps: { … } }   (skills / mcps: agents/runner.ts; quit: quit.ts)
-  //   export const metadata = { title: "Health" }   (what navigation calls the page; it stays in the client bundle)
+  //   export const metadata = { title: "Health", lang: "zh-CN" }   (what navigation calls the page, the language it is in; it stays in the client bundle)
   for (const stmt of ast.program.body as Node[]) {
     // import Calculator, { useCalculator } from "~/calculator": the component, and hooks that run as that node.
     if (stmt.type === "ImportDeclaration" && INSTALL_SOURCE.test(stmt.source.value)) fail(stmt, installSourceError(stmt.source.value));
@@ -295,6 +297,9 @@ export function analyze(
         const order = (meta as { order?: unknown } | null)?.order;
         if (typeof order === "number" && Number.isFinite(order)) result.order = order;
         else if (order !== undefined) fail(d, `metadata.order must be a number (lower comes first in the navigation)`);
+        const lang = (meta as { lang?: unknown } | null)?.lang;
+        if (typeof lang === "string" && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/.test(lang)) result.lang = lang;
+        else if (lang !== undefined) fail(d, `metadata.lang must be a language tag ("en", "zh-CN"): the language the page is written in`);
         continue;
       }
       if (which === "actions") {
@@ -447,6 +452,7 @@ export function mergeManifest(parts: Extracted[]): Extracted {
     m.config = p.config ?? m.config;
     m.title = p.title ?? m.title; // parts come layout first, so the page's own title wins
     m.order = p.order ?? m.order;
+    m.lang = p.lang ?? m.lang;
     m.errors.push(...p.errors);
   }
   for (const t of m.triggers) {

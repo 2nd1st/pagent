@@ -12,6 +12,15 @@ import { fileURLToPath } from "node:url";
 
 const dir = resolve(process.argv[2] ?? "my-pagent-app");
 const cli = process.argv.includes("--codex") ? "codex" : "claude";
+// --lang zh-CN: the app's language. The home page says it (metadata.lang), so the engine's words on its pages follow it,
+// and its own words are in it. English otherwise.
+const at = process.argv.indexOf("--lang");
+const lang = at > 2 ? process.argv[at + 1] : process.argv.find((a) => a.startsWith("--lang="))?.slice("--lang=".length);
+const HOME = {
+  en: { empty: "Ask me anything, or tell me what you would like this app to do for you.", unpin: "Unpin" },
+  "zh-CN": { empty: "想问什么都可以，或者告诉我你想让这个应用帮你做什么。", unpin: "取消固定" },
+};
+const words = HOME[lang] ?? HOME.en;
 if (existsSync(dir) && readdirSync(dir).length) {
   console.error(`${dir} exists and is not empty`);
   process.exit(1);
@@ -32,10 +41,15 @@ const files = {
 };
 for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
 cpSync(fileURLToPath(new URL("template", import.meta.url)), dir, { recursive: true });
-// Placeholders: __TITLE__ (the app's name, inside a string) and __CLI__ (its harness).
+// Placeholders: __TITLE__ (the app's name, inside a string), __CLI__ (its harness), the home page's words (__EMPTY__,
+// __UNPIN__), and its language next to its title.
+const inString = (s) => JSON.stringify(s).slice(1, -1);
 for (const name of ["page.tsx", "AGENTS.md"]) {
   const file = join(dir, name);
-  writeFileSync(file, readFileSync(file, "utf8").replaceAll("__TITLE__", JSON.stringify(basename(dir)).slice(1, -1)).replaceAll("__CLI__", cli));
+  let text = readFileSync(file, "utf8");
+  if (lang) text = text.replace('{ title: "__TITLE__" }', `{ title: "__TITLE__", lang: ${JSON.stringify(lang)} }`);
+  text = text.replaceAll("__TITLE__", inString(basename(dir))).replaceAll("__CLI__", cli).replaceAll("__EMPTY__", inString(words.empty)).replaceAll("__UNPIN__", inString(words.unpin));
+  writeFileSync(file, text);
 }
 try {
   symlinkSync("AGENTS.md", join(dir, "CLAUDE.md"));

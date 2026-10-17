@@ -7,6 +7,7 @@ import type { FileUIPart, UIMessage } from "ai";
 import { draftKey, FormStatesOf, LOCK_ICON, Part, toolLabel, Turns, useAgentChat, useDraft } from "./chat.tsx";
 import { IMAGE_TYPES, imagePart, imagesIn } from "./attach.ts";
 import type { CardsShown } from "./cards.tsx";
+import { labelOf, sayIn, t, tn, useLanguage } from "./i18n.ts";
 import { useHost, useResolvedAgent, type Activity, type AgentHandle, type AgentStatus, type Question, type SessionUsage } from "./index.tsx";
 
 // ---------------------------------------------------------------- status
@@ -18,6 +19,7 @@ import { useHost, useResolvedAgent, type Activity, type AgentHandle, type AgentS
 export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?: boolean; said?: boolean } = {}): AgentStatus {
   const agent = useResolvedAgent(explicit);
   const host = useHost();
+  const lang = useLanguage();
   const [status, setStatus] = useState<AgentStatus>({ busy: false, activity: null, questions: [], session: {} });
   // How long it has been quiet grows with nothing new from it: said again every half minute while it is busy.
   const [, tick] = useState(0);
@@ -55,7 +57,7 @@ export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?:
           case "run-start":
             // Busy already: a message joining the turn in progress (an interjection), which goes on doing what it did.
             if (s.busy) return { ...s, quietSince: Date.now(), stuck: false };
-            return { ...s, busy: true, activity: "starting", doing: { label: "Starting" }, since: Date.now(), quietSince: Date.now(), stuck: false };
+            return { ...s, busy: true, activity: "starting", doing: { label: "Starting", say: { key: "doing.starting" } }, since: Date.now(), quietSince: Date.now(), stuck: false };
           case "activity":
             return { ...s, activity: e.label, doing: e.doing ?? { label: toolLabel(e.label) }, quietSince: Date.now(), stuck: false };
           case "run-end":
@@ -76,11 +78,12 @@ export function useAgentStatus(explicit?: AgentHandle | string, opts: { handle?:
       off();
     };
   }, [host, agent.node, agent.agent]);
-  return status;
+  // Its label in the app's language (i18n.ts): what the server says it is doing, in the words of the page.
+  return useMemo(() => (status.doing ? { ...status, doing: { ...status.doing, label: labelOf(status.doing) } } : status), [status, lang]);
 }
 
 /** What it is doing, in parts (a host before `doing` gives only the raw line: that is the label then). */
-export const doingOf = (s: AgentStatus): Activity => s.doing ?? { label: s.activity ? toolLabel(s.activity) : "Working" };
+export const doingOf = (s: AgentStatus): Activity => s.doing ?? { label: s.activity ? toolLabel(s.activity) : t("doing.working") };
 
 const QUIET = 2 * 60_000;
 const STUCK = 15 * 60_000;
@@ -88,7 +91,7 @@ const STUCK = 15 * 60_000;
 /** How long, roughly: "3 min", "8 h", "2 days". */
 const span = (ms: number) => {
   const min = Math.floor(ms / 60_000);
-  return min < 120 ? `${min} min` : min < 48 * 60 ? `${Math.round(min / 60)} h` : `${Math.round(min / 1440)} days`;
+  return min < 120 ? t("span.min", { n: min }) : min < 48 * 60 ? t("span.h", { n: Math.round(min / 60) }) : t("span.days", { n: Math.round(min / 1440) });
 };
 
 /**
@@ -99,11 +102,11 @@ export function quietNote(s: AgentStatus, now = Date.now()): string | null {
   if (!s.busy || !s.quietSince) return null;
   const ms = now - s.quietSince;
   if (ms < QUIET) return null;
-  return `quiet for ${span(ms)}${s.stuck || ms >= STUCK ? ", may be stuck" : ""}`;
+  return t(s.stuck || ms >= STUCK ? "quiet.stuck" : "quiet", { span: span(ms) });
 }
 
 /** Its state in a few words: what it is doing (its label, and how long it has been quiet), waiting for an answer, or idle. */
-const activityText = (s: AgentStatus) => (s.questions.length ? "needs your answer" : s.busy ? [doingOf(s).label, quietNote(s)].filter(Boolean).join(" · ") : "idle");
+const activityText = (s: AgentStatus) => (s.questions.length ? t("status.needsAnswer") : s.busy ? [doingOf(s).label, quietNote(s)].filter(Boolean).join(" · ") : t("status.idle"));
 
 /** The call behind the label, for a closer look (a tooltip): "Bash git status". Nothing when there is no call. */
 const activityDetail = (s: AgentStatus) => {
@@ -113,17 +116,17 @@ const activityDetail = (s: AgentStatus) => {
 
 /** "ctx 84k / 200k": how much context the session's last request sent, of the model's window. */
 const tokens = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`);
-const contextText = (u?: SessionUsage | null) => (u?.context ? `ctx ${tokens(u.context)}${u.window ? ` / ${tokens(u.window)}` : ""}` : null);
+const contextText = (u?: SessionUsage | null) => (u?.context ? (u.window ? t("context.of", { used: tokens(u.context), window: tokens(u.window) }) : t("context", { used: tokens(u.context) })) : null);
 
 // ---------------------------------------------------------------- question
 
-/** What a permission request is about, from its question ("Allow Bash?"). */
-const wantsTo = (q: Question) => {
+/** What a permission request is about, from its question ("Allow Bash?"): who wants to do what. */
+const wantsTo = (q: Question, who: string) => {
   const tool = /^Allow (\S+?)\?/.exec(q.question)?.[1] ?? "";
-  if (/^(Bash|shell|exec)/i.test(tool)) return "wants to run a command";
-  if (/^(Edit|Write|MultiEdit|NotebookEdit|apply_patch)$/i.test(tool)) return "wants to change a file";
-  if (/^Web(Fetch|Search)$/.test(tool)) return "wants to go online";
-  return "asks for permission";
+  if (/^(Bash|shell|exec)/i.test(tool)) return t("question.command", { who });
+  if (/^(Edit|Write|MultiEdit|NotebookEdit|apply_patch)$/i.test(tool)) return t("question.edit", { who });
+  if (/^Web(Fetch|Search)$/.test(tool)) return t("question.web", { who });
+  return t("question.permission", { who });
 };
 
 /**
@@ -136,6 +139,7 @@ export function QuestionCard({ question, from }: { question: Question; from?: st
 }
 
 function PlainQuestion({ question, from }: { question: Question; from?: string }) {
+  useLanguage();
   const host = useHost();
   const [text, setText] = useState("");
   const reply = (a: string) => a.trim() && void host.answer(question.id, a.trim());
@@ -145,20 +149,21 @@ function PlainQuestion({ question, from }: { question: Question; from?: string }
     <div className="pagent-question" data-pagent-chrome>
       <div className="pagent-question-eyebrow">
         <span className="pagent-dot" data-asking="true" />
-        {who} {permission ? wantsTo(question) : "is waiting for your answer"}
+        {permission ? wantsTo(question, who) : t("question.waiting", { who })}
       </div>
-      <div className="pagent-question-text">{question.question}</div>
-      {question.detail && <pre className="pagent-question-detail">{question.detail}</pre>}
+      {/* The engine's own words (a permission, a trust request) in the app's language; the answer is the option as written. */}
+      <div className="pagent-question-text">{(question.say && sayIn(question.say.question)) ?? question.question}</div>
+      {question.detail && <pre className="pagent-question-detail">{(question.say?.detail && sayIn(question.say.detail)) ?? question.detail}</pre>}
       {question.options.length > 0 && (
         <div className="pagent-question-options">
           {question.options.map((o, i) => (
-            <button key={o} className={permission && i === 0 ? "pagent-primary" : undefined} onClick={() => reply(o)}>{o}</button>
+            <button key={o} className={permission && i === 0 ? "pagent-primary" : undefined} onClick={() => reply(o)}>{(question.say?.options?.[i] && sayIn(question.say.options[i])) ?? o}</button>
           ))}
         </div>
       )}
       {question.kind !== "permission" && (
         <form onSubmit={(e) => (e.preventDefault(), reply(text))}>
-          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Or type an answer…" />
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder={t("question.type")} />
         </form>
       )}
     </div>
@@ -174,6 +179,7 @@ const EYE_OFF_ICON = "M2.5 2.5l11 11M6.6 4A6.6 6.6 0 0 1 8 3.5c4.1 0 6.5 4.5 6.5
  * lives in this card until it is sent, and the card is chrome (never in what an agent reads of the screen).
  */
 function FormCard({ question, form, from }: { question: Question; form: NonNullable<Question["form"]>; from?: string }) {
+  useLanguage();
   const host = useHost();
   const [values, setValues] = useState<Record<string, string>>({});
   const [visible, setVisible] = useState(false);
@@ -200,12 +206,12 @@ function FormCard({ question, form, from }: { question: Question; form: NonNulla
         {secret ? (
           <span className="pagent-form-badge">
             <Icon d={LOCK_ICON} size={13} />
-            Secure Form
+            {t("form.secure")}
           </span>
         ) : (
           <span className="pagent-dot" data-asking="true" />
         )}
-        <span>{secret ? `for ${who}` : `${who} asks you to fill this in`}</span>
+        <span>{secret ? t("form.for", { who }) : t("form.asks", { who })}</span>
       </div>
       <div className="pagent-question-text">{question.question}</div>
       {/* Not focused by itself: it may appear while the person is typing somewhere else. */}
@@ -225,7 +231,7 @@ function FormCard({ question, form, from }: { question: Question; form: NonNulla
               data-lpignore="true"
             />
             {secret && (
-              <button type="button" className="pagent-ghost pagent-icon" aria-pressed={visible} aria-label={visible ? "Hide" : "Show"} title={visible ? "Hide" : "Show"} onClick={() => setVisible((x) => !x)}>
+              <button type="button" className="pagent-ghost pagent-icon" aria-pressed={visible} aria-label={t(visible ? "form.hide" : "form.show")} title={t(visible ? "form.hide" : "form.show")} onClick={() => setVisible((x) => !x)}>
                 <Icon d={visible ? EYE_OFF_ICON : EYE_ICON} size={15} />
               </button>
             )}
@@ -233,12 +239,14 @@ function FormCard({ question, form, from }: { question: Question; form: NonNulla
         </label>
       ))}
       <div className="pagent-form-note">
-        {secret ? <>Goes straight to {form.where ?? "where the agent asked"}. {question.agent} never sees it.</> : <>Goes to {question.agent} as a message.</>}
+        {secret
+          ? t("form.secretNote", { where: (form.whereSay && sayIn(form.whereSay)) ?? form.where ?? t("form.where"), agent: question.agent })
+          : t("form.note", { agent: question.agent })}
       </div>
       {error && <div className="pagent-form-error" role="alert">{error}</div>}
       <div className="pagent-question-options">
-        <button type="submit" className="pagent-primary" disabled={busy || !ready}>{busy ? "Sending…" : "Submit"}</button>
-        <button type="button" className="pagent-ghost" disabled={busy} onClick={() => void send(true)}>Cancel</button>
+        <button type="submit" className="pagent-primary" disabled={busy || !ready}>{t(busy ? "form.sending" : "form.submit")}</button>
+        <button type="button" className="pagent-ghost" disabled={busy} onClick={() => void send(true)}>{t("form.cancel")}</button>
       </div>
     </form>
   );
@@ -282,6 +290,7 @@ function Composer({ onSend, onInterject, disabled, commands = [], placeholder, k
   keep: string;
   attach?: { current: Attaching | null };
 }) {
+  useLanguage();
   const [draft, setDraft] = useDraft(keep);
   const [pick, setPick] = useState(0);
   const [files, setFiles] = useState<FileUIPart[]>([]);
@@ -321,10 +330,10 @@ function Composer({ onSend, onInterject, disabled, commands = [], placeholder, k
           {files.map((f, i) => (
             <span key={i} className="pagent-composer-file">
               <img src={f.url} alt={f.filename ?? ""} title={f.filename} />
-              <button type="button" className="pagent-icon" aria-label="Remove" title="Remove" onClick={() => setFiles((x) => x.filter((_, j) => j !== i))}>×</button>
+              <button type="button" className="pagent-icon" aria-label={t("composer.remove")} title={t("composer.remove")} onClick={() => setFiles((x) => x.filter((_, j) => j !== i))}>×</button>
             </span>
           ))}
-          {adding > 0 && <span className="pagent-muted">Adding…</span>}
+          {adding > 0 && <span className="pagent-muted">{t("composer.adding")}</span>}
           {failed && <span className="pagent-composer-failed" role="alert">{failed}</span>}
         </div>
       )}
@@ -360,16 +369,16 @@ function Composer({ onSend, onInterject, disabled, commands = [], placeholder, k
           if (images.length) (e.preventDefault(), add(images));
         }}
       />
-      <label className="pagent-ghost pagent-icon pagent-composer-clip" title="Add an image (or paste one, or drop it on the conversation)">
+      <label className="pagent-ghost pagent-icon pagent-composer-clip" title={t("composer.image")}>
         <input type="file" accept={IMAGE_TYPES.join(",")} multiple hidden onChange={(e) => (add(imagesIn(e.target.files)), (e.target.value = ""))} />
         <Icon d={CLIP_ICON} />
       </label>
       {onInterject && (
-        <button type="button" className="pagent-ghost pagent-icon pagent-interject" aria-label="Say it now" title="Say it now: into the turn in progress (⌘/Ctrl+Enter)" disabled={disabled || adding > 0 || (!draft.trim() && !files.length)} onClick={() => send(onInterject)}>
+        <button type="button" className="pagent-ghost pagent-icon pagent-interject" aria-label={t("composer.now")} title={t("composer.nowHint")} disabled={disabled || adding > 0 || (!draft.trim() && !files.length)} onClick={() => send(onInterject)}>
           <Icon d={INTERJECT_ICON} />
         </button>
       )}
-      <button type="submit" className="pagent-primary" aria-label="Send" title="Send" disabled={disabled || adding > 0 || (!draft.trim() && !files.length)}>
+      <button type="submit" className="pagent-primary" aria-label={t("composer.send")} title={t("composer.send")} disabled={disabled || adding > 0 || (!draft.trim() && !files.length)}>
         <Icon d={SEND_ICON} />
       </button>
     </form>
@@ -384,7 +393,8 @@ const lastAssistant = (messages: UIMessage[]) => {
 };
 
 /** A bottom input. The agent's reply shows as one bubble above it, until dismissed or the next message. */
-export function AgentBar({ agent: explicit, onExpand, onClose, placeholder = "Tell the app what to do…" }: { agent?: AgentHandle | string; onExpand?: () => void; onClose?: () => void; placeholder?: string }) {
+export function AgentBar({ agent: explicit, onExpand, onClose, placeholder }: { agent?: AgentHandle | string; onExpand?: () => void; onClose?: () => void; placeholder?: string }) {
+  useLanguage();
   const agent = useResolvedAgent(explicit);
   const { messages, sendMessage } = useAgentChat(agent);
   const status = useAgentStatus(agent);
@@ -400,7 +410,7 @@ export function AgentBar({ agent: explicit, onExpand, onClose, placeholder = "Te
       {status.questions.map((q) => <QuestionCard key={q.id} question={q} />)}
       {showBubble && (
         <div className="pagent-bubble">
-          <button className="pagent-icon" title="Dismiss" onClick={() => setDismissed(reply!.id)}>×</button>
+          <button className="pagent-icon" title={t("bar.dismiss")} onClick={() => setDismissed(reply!.id)}>×</button>
           {tools.length > 0 && (
             <FormStatesOf agent={agent} messages={messages}>
               <div className="pagent-tools">{tools.map((p, i) => <Part key={i} part={p} />)}</div>
@@ -411,9 +421,9 @@ export function AgentBar({ agent: explicit, onExpand, onClose, placeholder = "Te
       )}
       <div className="pagent-bar">
         <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} title={[activityText(status), activityDetail(status)].filter(Boolean).join("\n")} />
-        <Composer key={draftKey(agent)} keep={draftKey(agent)} placeholder={placeholder} disabled={status.busy} commands={status.session.slashCommands} onSend={(text, files) => void sendMessage(text ? { text, files } : { files })} />
-        {onExpand && <button className="pagent-icon" title="Full screen" onClick={onExpand}>⤢</button>}
-        {onClose && <button className="pagent-icon" title="Close" onClick={onClose}>×</button>}
+        <Composer key={draftKey(agent)} keep={draftKey(agent)} placeholder={placeholder ?? t("bar.placeholder")} disabled={status.busy} commands={status.session.slashCommands} onSend={(text, files) => void sendMessage(text ? { text, files } : { files })} />
+        {onExpand && <button className="pagent-icon" title={t("bar.fullScreen")} onClick={onExpand}>⤢</button>}
+        {onClose && <button className="pagent-icon" title={t("close")} onClick={onClose}>×</button>}
       </div>
     </div>
   );
@@ -440,7 +450,11 @@ export function Terminal({ agent: explicit, style }: { agent?: AgentHandle | str
 /** "8s", "2m 05s", "1h 12m": how long, short. */
 const lasted = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
-  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return s < 60
+    ? t("duration.s", { s })
+    : s < 3600
+      ? t("duration.m", { m: Math.floor(s / 60), s: String(s % 60).padStart(2, "0") })
+      : t("duration.h", { h: Math.floor(s / 3600), m: Math.floor((s % 3600) / 60) });
 };
 
 /**
@@ -490,6 +504,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
   /** cards in replies: open (default), folded to their title row until opened, or compact (open, shorter) */
   cards?: CardsShown;
 }) {
+  useLanguage();
   const agent = useResolvedAgent(explicit);
   const { messages, sendMessage, stop: detach, loaded } = useAgentChat(agent);
   const status = useAgentStatus(agent, { handle: true });
@@ -574,7 +589,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
         attach.current?.add(imagesIn(e.dataTransfer.files));
       }}
     >
-      {over && <div className="pagent-console-drop">Drop an image to add it to your message</div>}
+      {over && <div className="pagent-console-drop">{t("console.drop")}</div>}
       <header className="pagent-console-head">
         <span className="pagent-dot" data-busy={status.busy} data-asking={status.questions.length > 0} />
         <strong>{agent.agent}</strong>
@@ -583,26 +598,26 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
         <span className="pagent-spacer" />
         {/* Its turn in progress, stopped as Esc in its TUI would: one stuck on a call that never returns, or going the wrong way. */}
         {status.busy && (
-          <button className="pagent-ghost pagent-stop" title="Stop the turn in progress (Esc in its terminal)" disabled={stopping} onClick={() => (setStopping(true), void host.stop(agent).finally(() => setStopping(false)))}>
+          <button className="pagent-ghost pagent-stop" title={t("console.stopHint")} disabled={stopping} onClick={() => (setStopping(true), void host.stop(agent).finally(() => setStopping(false)))}>
             <Icon d={STOP_ICON} size={14} />
-            {stopping ? "Stopping…" : "Stop"}
+            {t(stopping ? "console.stopping" : "console.stop")}
           </button>
         )}
         {status.session.resume && (
           <button
             className="pagent-ghost pagent-resume"
-            title={`Same session from the CLI:\n${status.session.resume}`}
+            title={t("console.resumeHint", { command: status.session.resume })}
             onClick={() => void navigator.clipboard.writeText(status.session.resume!).then(() => (setCopied(true), setTimeout(() => setCopied(false), 1500)))}
           >
             <Icon d={TERMINAL_ICON} size={14} />
-            {copied ? "Copied" : "Resume in CLI"}
+            {t(copied ? "console.copied" : "console.resume")}
           </button>
         )}
-        {onCollapse && <button className="pagent-icon" title="Collapse (Esc)" onClick={onCollapse}>⤡</button>}
-        {onClose && <button className="pagent-icon" title="Close" onClick={onClose}>×</button>}
+        {onCollapse && <button className="pagent-icon" title={t("console.collapse")} onClick={onCollapse}>⤡</button>}
+        {onClose && <button className="pagent-icon" title={t("close")} onClick={onClose}>×</button>}
       </header>
       <div className="pagent-console-log" ref={logRef}>
-        {messages.length === 0 && (loaded ? <div className="pagent-console-empty">{empty ?? "No turns yet."}</div> : <div className="pagent-muted">Loading…</div>)}
+        {messages.length === 0 && (loaded ? <div className="pagent-console-empty">{empty ?? t("console.empty")}</div> : <div className="pagent-muted">{t("loading")}</div>)}
         <FormStatesOf agent={agent} messages={messages}>
           <Turns messages={messages} me={agent.agent} detailed chatter={chatter} cards={cards} />
         </FormStatesOf>
@@ -614,9 +629,9 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
           <div className="pagent-queued">
             {queued.map((q, i) => (
               <div key={i} className="pagent-queued-item">
-                <span className="pagent-muted">Queued</span>
-                <span className="pagent-queued-text">{q.text || `${q.files.length} image${q.files.length > 1 ? "s" : ""}`}</span>
-                <button className="pagent-icon" aria-label="Remove" title="Don't send it" onClick={() => setQueued((x) => x.filter((_, j) => j !== i))}>×</button>
+                <span className="pagent-muted">{t("console.queued")}</span>
+                <span className="pagent-queued-text">{q.text || tn("console.images.one", "console.images.other", q.files.length)}</span>
+                <button className="pagent-icon" aria-label={t("composer.remove")} title={t("console.unqueue")} onClick={() => setQueued((x) => x.filter((_, j) => j !== i))}>×</button>
               </div>
             ))}
           </div>
@@ -625,7 +640,7 @@ export function AgentConsole({ agent: explicit, onCollapse, onClose, inline, sty
           key={key}
           keep={draftKey(agent)}
           // What it is doing shows at the end of the conversation; here only what sending does meanwhile.
-          placeholder={!status.busy ? "Message, or / for commands" : status.interject ? "Queue for when it's done, or ⌘↵ to say it now" : "Queue a message for when it's done"}
+          placeholder={t(!status.busy ? "console.placeholder" : status.interject ? "console.queueOrNow" : "console.queue")}
           commands={status.session.slashCommands}
           attach={attach}
           onSend={(text, files) => (status.busy ? setQueued((x) => [...x, { text, files }]) : send(text, files))}
@@ -642,6 +657,7 @@ type Mode = "closed" | "bar" | "console";
 
 /** A corner button showing the agent's status. Opens the bar or the console. */
 export function AgentFab({ agent: explicit, initial = "closed" }: { agent?: AgentHandle | string; initial?: Mode }) {
+  useLanguage();
   const agent = useResolvedAgent(explicit);
   const status = useAgentStatus(agent);
   const [mode, setMode] = useState<Mode>(initial);

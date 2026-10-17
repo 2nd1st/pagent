@@ -2,13 +2,14 @@
 // Form among them), or a permission or trust decision the app needs. Harness-agnostic: the host shows it in whatever
 // component is on screen, and the answer goes back to whoever asked (for an agent's question, as a message to it).
 import { randomUUID } from "node:crypto";
-import { broadcast } from "./events.ts";
+import { broadcast, type Say } from "./events.ts";
 
 /**
  * What a form asks for: its fields, each a name (what the agent calls it) and a label (what the person reads). secret:
- * one value that goes straight to `where` (into.ts) and never to the agent: typed masked, never shown, never stored.
+ * one value that goes straight to `where` (into.ts; `whereSay`, the same as words of the shell's table) and never to
+ * the agent: typed masked, never shown, never stored.
  */
-export type Form = { fields: { name: string; label: string }[]; secret?: boolean; where?: string };
+export type Form = { fields: { name: string; label: string }[]; secret?: boolean; where?: string; whereSay?: Say };
 
 export type Question = {
   id: string;
@@ -19,6 +20,11 @@ export type Question = {
   detail?: string; // e.g. the command a permission request is about
   options: string[];
   form?: Form;
+  /**
+   * The engine's own words in it (a permission or trust request), as words of the shell's table: the question, its
+   * detail, each option. The answer is still the option as written ("Allow").
+   */
+  say?: { question: Say; detail?: Say; options?: Say[] };
   createdAt: number;
 };
 
@@ -42,6 +48,7 @@ export function askUser(
     kind?: Question["kind"];
     detail?: string;
     form?: Form;
+    say?: Question["say"];
     deliver?: Pending["deliver"];
     signal?: AbortSignal;
     id?: string;
@@ -50,7 +57,7 @@ export function askUser(
   } = {},
 ): Promise<string> {
   return new Promise((resolve) => {
-    const q: Question = { id: extra.id ?? randomUUID(), node: ref.node, agent: ref.agent, kind: extra.kind ?? (extra.form ? "form" : "question"), detail: extra.detail, question, options, ...(extra.form ? { form: extra.form } : {}), createdAt: extra.createdAt ?? Date.now() };
+    const q: Question = { id: extra.id ?? randomUUID(), node: ref.node, agent: ref.agent, kind: extra.kind ?? (extra.form ? "form" : "question"), detail: extra.detail, question, options, ...(extra.form ? { form: extra.form } : {}), ...(extra.say ? { say: extra.say } : {}), createdAt: extra.createdAt ?? Date.now() };
     // onAnswer: at once, before whoever answered hears back (the answer is written down before that, commands.ts).
     pending.set(q.id, { ...q, deliver: extra.deliver, resolve: (a) => (extra.onAnswer?.(a), resolve(a)) });
     broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "question", question: q } });

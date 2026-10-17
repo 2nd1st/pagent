@@ -2,6 +2,7 @@
 // a data file read or written. The shell implements it; nodes never see how.
 import type { ComponentType, CSSProperties } from "react";
 import type { ChatTransport, UIMessage } from "ai";
+import { t } from "./i18n.ts";
 
 // ---------------------------------------------------------------- host contract
 
@@ -19,7 +20,12 @@ export type Question = {
   question: string;
   detail?: string;
   options: string[];
-  form?: { fields: { name: string; label: string }[]; secret?: boolean; where?: string };
+  form?: { fields: { name: string; label: string }[]; secret?: boolean; where?: string; whereSay?: Say };
+  /**
+   * The engine's own words in it (a permission or trust request), as words of its table (i18n.ts): the question, its
+   * detail, each option. The answer is still the option as written ("Allow").
+   */
+  say?: { question: Say; detail?: Say; options?: Say[] };
   createdAt: number;
 };
 
@@ -55,11 +61,15 @@ export type SessionUsage = {
 
 /**
  * What an agent is doing, in parts. `label`: in a few plain words, for people ("Running a command", "Editing
- * page.tsx", "Thinking", "Explore: Reading page.tsx"). `tool` and `detail`: the call itself, as its harness names it
- * and its most telling argument ("Bash", "git status"), for a closer look (a tooltip). `subagent`: a sub-agent of its
- * is the one doing it (its type).
+ * page.tsx", "Thinking", "Explore: Reading page.tsx"), in the app's language. `say`: the same as words of the engine's
+ * table and their values (i18n.ts), which the label is made from. `tool` and `detail`: the call itself, as its harness
+ * names it and its most telling argument ("Bash", "git status"), for a closer look (a tooltip). `subagent`: a sub-agent
+ * of its is the one doing it (its type).
  */
-export type Activity = { label: string; tool?: string; detail?: string; subagent?: string };
+export type Activity = { label: string; say?: Say; tool?: string; detail?: string; subagent?: string };
+
+/** Words of the engine's table (i18n.ts), by key, with the values that go in them: a label as the server says it. */
+export type Say = { key: string; values?: Record<string, string | number | Say> };
 
 /** What an agent is doing right now. */
 export type AgentStatus = {
@@ -161,12 +171,12 @@ export type Caller = (
 /** A caller as people read it: "/ideas#ideas", "trigger:/ops#sweep", "http://192.168.0.50:4880/api/message (not verified)". */
 export function callerLabel(c: Caller): string {
   switch (c.kind) {
-    case "user": return "you";
+    case "user": return t("caller.you");
     case "page": return c.path;
     case "agent": return `${c.node}#${c.agent}`;
     case "trigger": return `trigger:${c.node}#${c.name}`;
     case "pagent": return "pagent";
-    case "external": return `${c.from ?? c.ip}${c.verified ? "" : " (a stranger)"}`;
+    case "external": return c.verified ? (c.from ?? c.ip) : t("caller.stranger", { who: c.from ?? c.ip });
   }
 }
 

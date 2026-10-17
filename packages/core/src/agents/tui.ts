@@ -57,6 +57,11 @@ async function trustFolder(ref: AgentRef, term: Term, cmd: TuiCommand): Promise<
     askUser(ref, `Trust this folder for ${harness}?`, ["Trust", "Not now"], {
       kind: "permission",
       detail: `${trustedDir(cmd.cwd)}\n\n${harness} asks this the first time it works in a folder. Trusted, it can read, edit and run files here (each action still subject to its permissions).`,
+      say: {
+        question: { key: "ask.trust", values: { harness } },
+        detail: { key: "ask.trustDetail", values: { dir: trustedDir(cmd.cwd), harness } },
+        options: [{ key: "ask.trustYes" }, { key: "ask.notNow" }],
+      },
       signal: answered.signal,
     }),
   );
@@ -104,7 +109,16 @@ function watchPrompts(term: Term) {
     // Claude Code says what it asks: "approve Bash: ls -la /tmp | head -3".
     const [, tool, what] = /^approve (\S+?):\s*([\s\S]*)$/.exec(p.msg ?? "") ?? [];
     const r = await askOrDecline(term.ref, () =>
-      askUser(term.ref, `Allow ${tool ?? "this"}?`, ["Allow", "Deny"], { kind: "permission", detail: what || p.msg || "(the prompt is in its terminal)", signal: asked.signal }),
+      askUser(term.ref, `Allow ${tool ?? "this"}?`, ["Allow", "Deny"], {
+        kind: "permission",
+        detail: what || p.msg || "(the prompt is in its terminal)",
+        say: {
+          question: tool ? { key: "ask.allow", values: { tool } } : { key: "ask.allowThis" },
+          ...(what || p.msg ? {} : { detail: { key: "ask.inTerminal" } }),
+          options: [{ key: "ask.allowYes" }, { key: "ask.deny" }],
+        },
+        signal: asked.signal,
+      }),
     );
     if (asked.signal.aborted || card !== asked) return;
     card = null;
