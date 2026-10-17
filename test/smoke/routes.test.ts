@@ -90,6 +90,15 @@ describe("routes", () => {
     assert.deepEqual([f.text, f.type], ["file a/b.txt", "text/plain"]);
   });
 
+  test("a body over 10 MB is refused (413), whether it says its length or comes in chunks; one of 10 MB is taken", async () => {
+    const limit = 10 * 1024 * 1024;
+    assert.equal((await call(app, "/api/raw", { method: "POST", body: "x".repeat(limit + 1) })).status, 413);
+    const chunks = new ReadableStream({ start: (c) => (Array.from({ length: 11 }, () => c.enqueue(new Uint8Array(1024 * 1024).fill(120))), c.close()) });
+    assert.equal((await call(app, "/api/raw", { method: "POST", body: chunks, duplex: "half" } as RequestInit)).status, 413);
+    const r = await call(app, "/api/raw", { method: "POST", body: "x".repeat(limit) });
+    assert.deepEqual([r.status, r.text.length], [201, limit]);
+  });
+
   test("tell() serving a caller from outside must say whom it is from", async () => {
     const r = await postJson(app, "/api/tell", { text: "hi" });
     assert.equal(r.status, 500);
@@ -185,6 +194,12 @@ describe("/mcp: the same routes as tools", () => {
     assert.equal(wrong.isError, true);
     const sync = await tool("api_message_post", { text: "!say over mcp", wait: 20 });
     assert.equal(JSON.parse(sync.content[0].text).reply, "over mcp");
+  });
+
+  test("a message over 10 MB is refused (413)", async () => {
+    const r = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "api_raw_post", arguments: { body: "x".repeat(10 * 1024 * 1024) } } });
+    assert.equal(r.status, 413);
+    assert.equal(JSON.parse(r.text).error.code, -32600);
   });
 
   test("initialize, and a notification gets 202", async () => {

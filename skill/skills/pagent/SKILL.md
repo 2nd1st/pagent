@@ -137,7 +137,8 @@ export async function POST(input: { text: string; tags?: string[] }, { caller, p
   it is and returns a `Response`: third-party payloads (GitHub, CI) and status codes of your own. Methods: GET, POST,
   PUT, PATCH, DELETE. The doc comment above a handler is its description on `/mcp`.
 - **It runs as a `"use server"` function does**: a process per request, 120 s at most, the app's `.env` loaded, in the
-  app's folder (`data` from `"pagent/server"` is the root's data files; reach a node's through its actions).
+  app's folder (`data` from `"pagent/server"` is the root's data files; reach a node's through its actions). A body
+  over 10 MB is refused (413) before it runs, on `/mcp` too.
 - **`caller`** (the second parameter): from outside, `{ kind: "external", ip, from?, verified, inReplyTo? }`: `from` is
   the sender's own message route as its JSON body says, `verified` that its host is the machine the request came from
   (anything else is a **stranger**), `inReplyTo` that it is the automatic reply to a message of ours. When an agent of
