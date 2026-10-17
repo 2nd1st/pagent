@@ -21,6 +21,17 @@ test("--lang zh-CN: the home page in Chinese, saying so", () => {
   assert.deepEqual(analyze(page, "page.tsx").errors, []);
 });
 
+test("--lang zh, zh-Hans, zh-cn: the home page's own words in Chinese too, as the engine's are", () => {
+  for (const tag of ["zh", "zh-Hans", "zh-cn"]) {
+    assert.equal(create(`zh-${tag}`, "--lang", tag).status, 0);
+    const page = readFileSync(join(scratch, `zh-${tag}`, "page.tsx"), "utf8");
+    assert.match(page, new RegExp(`lang: "${tag}"`));
+    assert.match(page, /empty="想问什么都可以/, tag);
+  }
+  assert.equal(create("en-GB", "--lang", "en-GB").status, 0);
+  assert.match(readFileSync(join(scratch, "en-GB", "page.tsx"), "utf8"), /empty="Ask me anything/); // a language it has no words for: English
+});
+
 test("--lang: a tag the compiler takes, or nothing is made and it says how to write one", () => {
   for (const [i, tag] of ["zh-CN", "en", "zh-Hans-CN", "zh_CN", "zh-", "Chinese", "中文", ""].entries()) {
     const compiles = analyze(`export const metadata = { title: "x", lang: ${JSON.stringify(tag)} };`).errors.length === 0;
