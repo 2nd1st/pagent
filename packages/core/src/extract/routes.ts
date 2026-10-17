@@ -4,7 +4,7 @@
 // has its schema. One whose first parameter is a `Request` (or untyped, as in Next) is raw: it gets the request as it is
 // and returns a Response. `export { inbox as POST } from "pagent/server"` is the default message route (server-api.ts).
 import { lineOf, parseModule, type Node } from "./ast.ts";
-import { docOf, isFn, localTypes, typeSchema } from "./server-exports.ts";
+import { docOf, isFn, localTypes, paramType, typeSchema } from "./server-exports.ts";
 
 export const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type Method = (typeof METHODS)[number];
@@ -44,7 +44,7 @@ export function routeExports(code: string, file: string): { handlers: Handler[];
   const isMethod = (name: string): name is Method => (METHODS as readonly string[]).includes(name);
   const add = (method: Method, fn: Node, stmt: Node) => {
     const p = fn.params?.[0] as Node | undefined;
-    const t = p?.typeAnnotation?.typeAnnotation as Node | undefined;
+    const t = paramType(p);
     const doc = docOf(stmt);
     const named = t?.type === "TSTypeReference" && t.typeName.type === "Identifier" ? t.typeName.name : null;
     if (!p) return void handlers.push({ method, kind: "none", ...(doc ? { doc } : {}) });

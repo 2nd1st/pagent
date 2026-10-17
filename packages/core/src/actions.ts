@@ -2,7 +2,8 @@
 // The same run serves the page (which imports the function: compile.ts makes it a call here), agents
 // (`pagent run <node> <name>`), triggers, routes and other nodes' server code (both import it by address).
 //
-// Across the engine a call is JSON both ways. Its input is the function's one argument; its result is what it returned
+// Across the engine a call is JSON both ways. Its input is the function's one argument (a call without one passes
+// undefined, not null, so a default value applies: `list({ q }: { q?: string } = {})`); its result is what it returned
 // (undefined stays undefined; anything else as JSON.stringify makes it: a Date becomes a string, a Map an object), or
 // what it threw: the caller's promise rejects with an Error of the same message. Stacks, logs and server paths stay with
 // the server and the node's agents (`pagent run` prints them); a page or another app gets the message only.
@@ -54,7 +55,7 @@ export async function runAction(root: string, nodes: Nodes, path: string, name: 
   const since = Date.now();
   const source = join(dir, action.file);
   const { r, logs } = await withCall(via(how.caller, `${path}:${name}`), nodes.self ?? nodes.url ?? "", (call) =>
-    runServerCode(root, source, ENTRY(source), nodeOfFile(root, source), join(root, path), { name, input: input ?? null }, { url: nodes.url, turn: how.turn, call: call.id }, name),
+    runServerCode(root, source, ENTRY(source), nodeOfFile(root, source), join(root, path), { name, input }, { url: nodes.url, turn: how.turn, call: call.id }, name),
   );
   if (app) await noteLaunch(how.turn!, app, since).catch((e) => console.warn(`${path}: ${(e as Error).message}`));
   if (!r.ok) return { ok: false, error: r.error ?? "failed", ...(r.stack ? { stack: r.stack } : {}), logs };
@@ -120,7 +121,7 @@ const call = (name) => async (input) => {
   const res = await fetch(url + "/_pagent/action", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ node: ${JSON.stringify(node)}, name, input: input ?? null, turn: process.env.PAGENT_TURN, call: process.env.PAGENT_CALL }),
+    body: JSON.stringify({ node: ${JSON.stringify(node)}, name, input, turn: process.env.PAGENT_TURN, call: process.env.PAGENT_CALL }),
   });
   const r = await res.json();
   if (!r.ok) throw new Error(r.error ?? ${JSON.stringify(node)} + ":" + name + " failed");
