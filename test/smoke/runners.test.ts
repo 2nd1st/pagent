@@ -222,6 +222,55 @@ test("claude-code: the last words and the session's title (its latest ai-title, 
   }
 });
 
+describe("claude-code: what the app's root forbids holds for every agent of the app", () => {
+  // Claude Code reads .claude/settings.json only where it starts, and an agent starts in its node's folder.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "pagent-deny-")));
+  const node = join(root, "notes", "today");
+  const settingsOf = (cwd: string, env: Record<string, string> = {}) => {
+    const [c] = opOf("claude-code", { op: "interactive", cwd, stateDir: join(root, ".state") }, { CLAUDE_CONFIG_DIR: join(root, "config"), ...env });
+    return JSON.parse(c.args[c.args.indexOf("--settings") + 1]).permissions;
+  };
+  before(() => {
+    mkdirSync(join(root, ".git"));
+    mkdirSync(join(root, ".claude"));
+    mkdirSync(node, { recursive: true });
+    const permissions = {
+      allow: ["Bash(rm:*)"],
+      deny: ["Read(//**/.env)", "Read(~/notes/**)", "Read(/secrets/**)", "Read(./.env)", "Edit(docs/*.md)", "Read", "Bash(cat:*)"],
+      ask: ["WebFetch"],
+    };
+    writeFileSync(join(root, ".claude", "settings.json"), JSON.stringify({ permissions }));
+    writeFileSync(join(root, ".claude", "settings.local.json"), JSON.stringify({ permissions: { deny: ["Edit(/page.tsx)"] } }));
+  });
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  test("a node's agent: the root's deny and ask rules, its paths still the root's; never its allow", () => {
+    const p = settingsOf(node);
+    assert.deepEqual(p.deny, [
+      "Read(//**/.env)", // anywhere, and the home folder: as written
+      "Read(~/notes/**)",
+      `Read(/${root}/secrets/**)`, // below the root, as for the root's agent, not below the node's folder
+      `Read(/${root}/**/.env)`, // a name alone: at any depth below the root
+      `Edit(/${root}/docs/*.md)`,
+      "Read", // not a path
+      "Bash(cat:*)",
+      `Edit(/${root}/page.tsx)`, // settings.local.json too
+    ]);
+    assert.deepEqual(p.ask, ["WebFetch"]);
+    assert.ok(!p.allow.includes("Bash(rm:*)"));
+  });
+
+  test("the root's agent: Claude Code reads them itself, nothing is added", () => {
+    const p = settingsOf(root);
+    assert.equal(p.deny, undefined);
+    assert.equal(p.ask, undefined);
+  });
+
+  test("a home folder under git is no app: its .claude is the user's own", () => {
+    assert.equal(settingsOf(node, { HOME: root }).deny, undefined);
+  });
+});
+
 describe("claude-code: skills and MCP servers an agent declares replace the user's", () => {
   // The command its TUI would run (interactive op), against a config with a skill of the user's and a plugin they enabled.
   const dir = mkdtempSync(join(tmpdir(), "pagent-own-"));

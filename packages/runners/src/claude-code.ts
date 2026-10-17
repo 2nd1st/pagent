@@ -149,6 +149,9 @@ const settingsArgs = (input: Input, skills: OwnSkills | null, tui = false) => {
   // unattended (a trigger's run, where nobody can answer a prompt).
   const own = input.options?.allow ?? [];
   settings.permissions = { ...settings.permissions, allow: [...(settings.permissions?.allow ?? []), ...git, ...pagent, ...own] };
+  // What the app's root forbids holds for every agent of the app, not only for the one that starts there.
+  const app = appRules(input.cwd);
+  for (const k of ["deny", "ask"] as const) if (app[k].length) settings.permissions[k] = [...(settings.permissions[k] ?? []), ...app[k]];
   // If the user runs Claude Code sandboxed, `pagent` must still reach the app's socket (and only that is added).
   if (input.agentSocket) {
     const network = settings.sandbox?.network ?? {};
@@ -160,6 +163,41 @@ const settingsArgs = (input: Input, skills: OwnSkills | null, tui = false) => {
   }
   return ["--settings", JSON.stringify(settings)];
 };
+
+/**
+ * What the app forbids (permissions.deny) or always asks about (permissions.ask) in its root's .claude/settings.json
+ * or settings.local.json, for an agent that starts elsewhere: Claude Code reads a project's settings.json only in the
+ * folder it starts in, so it would hold for the root's agent alone (settings.local.json is read at the repository's
+ * root by recent versions only; a rule twice is harmless). Never `allow`, which would widen what the agent may do.
+ */
+function appRules(cwd: string): { deny: string[]; ask: string[] } {
+  const rules = { deny: [] as string[], ask: [] as string[] };
+  const root = gitRoot(cwd);
+  // A home folder under git (dotfiles) is not a project: its .claude is the user's own config.
+  if (!root || realPath(root) === realPath(cwd) || realPath(root) === realPath(homedir())) return rules;
+  for (const f of ["settings.json", "settings.local.json"]) {
+    let permissions: any;
+    try {
+      permissions = JSON.parse(readFileSync(join(root, ".claude", f), "utf8")).permissions;
+    } catch {
+      continue;
+    }
+    for (const k of ["deny", "ask"] as const) for (const r of Array.isArray(permissions?.[k]) ? permissions[k] : []) if (typeof r === "string") rules[k].push(rootPath(r, realPath(root)));
+  }
+  return rules;
+}
+
+/**
+ * A Read or Edit rule's path as the root's agent reads it: "/x", "./x" and "x" are below the root (a name alone, as in
+ * .gitignore, at any depth), not below the folder the agent starts in. So it is made absolute ("//<root>/x"); one
+ * already absolute ("//x", "~/x") stays, and so does every rule when the root cannot be spelled in a pattern.
+ */
+function rootPath(rule: string, root: string): string {
+  const [, tool, path] = /^(Read|Edit)\((.+)\)$/.exec(rule) ?? [];
+  if (!path || path.startsWith("//") || path.startsWith("~/") || /[*?[\]\\]/.test(root)) return rule;
+  const p = path.replace(/^\.\//, "");
+  return `${tool}(/${root}${p.startsWith("/") ? p : /\/./.test(p) ? `/${p}` : `/**/${p}`})`;
+}
 
 const STATUSLINE = join(dirname(fileURLToPath(import.meta.url)), "lib", "statusline.ts");
 
