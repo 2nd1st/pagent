@@ -15,7 +15,12 @@ const cli = process.argv.includes("--codex") ? "codex" : "claude";
 // --lang zh-CN: the app's language. The home page says it (metadata.lang), so the engine's words on its pages follow it,
 // and its own words are in it. English otherwise.
 const at = process.argv.indexOf("--lang");
-const lang = at > 2 ? process.argv[at + 1] : process.argv.find((a) => a.startsWith("--lang="))?.slice("--lang=".length);
+const lang = at > 2 ? (process.argv[at + 1] ?? "") : process.argv.find((a) => a.startsWith("--lang="))?.slice("--lang=".length);
+// A language tag as the compiler takes metadata.lang (core: extract/declarations.ts); else the home page would not compile.
+if (lang !== undefined && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/.test(lang)) {
+  console.error(`--lang ${lang}: not a language tag; write it like zh-CN or en (parts joined by "-", not "_")`);
+  process.exit(1);
+}
 const HOME = {
   en: { empty: "Ask me anything, or tell me what you would like this app to do for you.", unpin: "Unpin" },
   "zh-CN": { empty: "想问什么都可以，或者告诉我你想让这个应用帮你做什么。", unpin: "取消固定" },
