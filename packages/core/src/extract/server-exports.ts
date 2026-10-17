@@ -22,7 +22,7 @@ export function serverExports(code: string, file: string): { names: string[]; er
   }
   // For agents: the argument's type as written ({ keys: string[] }) and the doc comment above the export.
   const describe = (name: string, fn: Node, stmt: Node) => {
-    const t = fn.params?.[0]?.typeAnnotation?.typeAnnotation as Node | undefined;
+    const t = paramType(fn.params?.[0]);
     const doc = docOf(stmt);
     const schema = t ? typeSchema(t, types) : null;
     about[name] = {
@@ -53,6 +53,9 @@ export function serverExports(code: string, file: string): { names: string[]; er
   }
   return { names, errors, about };
 }
+
+/** A parameter's type as written, also when it has a default value (`{ q }: { q?: string } = {}`). */
+export const paramType = (p: Node | undefined) => ((p?.type === "AssignmentPattern" ? p.left : p)?.typeAnnotation?.typeAnnotation as Node | undefined);
 
 export const isFn = (n: Node | null | undefined) => !!n && /^(FunctionDeclaration|FunctionExpression|ArrowFunctionExpression)$/.test(n.type);
 

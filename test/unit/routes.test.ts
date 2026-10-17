@@ -33,6 +33,10 @@ test("a route's methods: typed (with its schema and doc), raw (a Request, or unt
   assert.deepEqual(inbox.handlers[0].schema?.required, ["text"]);
   assert.match(routeExports(`export { POST } from "./other";`, "r.ts").errors.join(), /write POST in the route itself/);
   assert.match(routeExports(`export function POST(n: number) {}`, "r.ts").errors.join(), /input is an object type/);
+  // A default value does not make it raw.
+  assert.deepEqual(routeExports(`export async function GET(input: { q?: string } = {}) {}`, "r.ts").handlers, [
+    { method: "GET", kind: "typed", input: "{ q?: string }", schema: { type: "object", properties: { q: { type: "string" } } } },
+  ]);
 });
 
 test("a path finds its route: static over [x] over [...x]; params", () => {

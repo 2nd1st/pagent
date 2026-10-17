@@ -18,10 +18,13 @@ describe("agents", () => {
       "b/page.tsx": fakePage(),
       // A trigger on another node's data file (/w has no agent); its action tells /t's agent, when there is something.
       "t/page.tsx": fakePage() + `export const triggers = { tasks: { watch: "~/w/tasks.json", run: "pick" } };\n`,
-      "t/actions.ts": `"use server";\nimport { readFileSync } from "node:fs";\nimport { tell } from "pagent/server";\n` +
+      "t/actions.ts": `"use server";\nimport { readFileSync } from "node:fs";\nimport { tell } from "pagent/server";\nimport { list } from "~/w/actions";\n` +
         `export async function pick() {\n  const tasks = JSON.parse(readFileSync("../w/tasks.json", "utf8"));\n  if (!tasks.length) return "nothing to do";\n` +
-        `  await tell("/t#bot", "!say " + tasks.join(", "));\n  return "told /t#bot";\n}\n`,
+        `  await tell("/t#bot", "!say " + tasks.join(", "));\n  return "told /t#bot";\n}\n` +
+        `export async function lists() {\n  return list();\n}\n`,
       "w/page.tsx": `export default function Page() { return <div />; }\n`,
+      // An argument with a default: called without one, the default applies.
+      "w/actions.ts": `"use server";\nexport async function list({ q = "all" }: { q?: string } = {}) {\n  return "list " + q;\n}\n`,
     });
   });
   after(() => app.close());
@@ -78,6 +81,15 @@ describe("agents", () => {
     assert.match(await ask(app, "/b", '!sh pagent tell .. "!say handed up"'), /Delegated to \/#bot/);
     await until(async () => (await history(app, "/")).includes("user (from /b#bot): !say handed up"), "the message above");
     assert.match(await ask(app, "/", '!sh pagent tell .. "!say nobody"'), /no agent above \/#bot/);
+  });
+
+  test("an action whose argument has a default: called without one (a page, `pagent run`, another node's code), the default applies", async () => {
+    assert.deepEqual(await app.post("/_pagent/action", { node: "/w", name: "list", from: "/w" }), { ok: true, value: "list all" });
+    assert.equal(await ask(app, "/", "!sh pagent run /w list"), "list all");
+    assert.equal(await ask(app, "/", "!sh pagent run /w list --q mine"), "list mine");
+    assert.match(await ask(app, "/", "!sh pagent run /w list --help"), /arguments: \{ q\?: string \}/);
+    assert.match(await ask(app, "/", "!sh pagent run /w list --q 3"), /wrong arguments for list/);
+    assert.deepEqual(await app.post("/_pagent/action", { node: "/t", name: "lists", from: "/t" }), { ok: true, value: "list all" });
   });
 
   test("a trigger runs its action; the action tells the agent, whose run says it came from the trigger", async () => {
