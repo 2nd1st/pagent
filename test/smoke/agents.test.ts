@@ -24,7 +24,9 @@ describe("agents", () => {
         `export async function lists() {\n  return list();\n}\n`,
       "w/page.tsx": `export default function Page() { return <div />; }\n`,
       // An argument with a default: called without one, the default applies.
-      "w/actions.ts": `"use server";\nexport async function list({ q = "all" }: { q?: string } = {}) {\n  return "list " + q;\n}\n`,
+      "w/actions.ts":
+        `"use server";\nexport async function list({ q = "all" }: { q?: string } = {}) {\n  return "list " + q;\n}\n` +
+        `export async function top(x: { n: number } = { n: 3 }) {\n  return "top " + x.n;\n}\n`,
     });
   });
   after(() => app.close());
@@ -89,6 +91,10 @@ describe("agents", () => {
     assert.equal(await ask(app, "/", "!sh pagent run /w list --q mine"), "list mine");
     assert.match(await ask(app, "/", "!sh pagent run /w list --help"), /arguments: \{ q\?: string \}/);
     assert.match(await ask(app, "/", "!sh pagent run /w list --q 3"), /wrong arguments for list/);
+    // A default with a field it requires: left out, the default applies; given, it is checked.
+    assert.equal(await ask(app, "/", "!sh pagent run /w top"), "top 3");
+    assert.equal(await ask(app, "/", "!sh pagent run /w top --n 5"), "top 5");
+    assert.match(await ask(app, "/", "!sh pagent run /w top '{}'"), /wrong arguments for top/);
     assert.deepEqual(await app.post("/_pagent/action", { node: "/t", name: "lists", from: "/t" }), { ok: true, value: "list all" });
   });
 
