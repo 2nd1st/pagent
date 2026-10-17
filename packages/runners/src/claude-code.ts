@@ -70,8 +70,21 @@ const out = (
 const configDir = () => process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
 const projectsDir = () => join(configDir(), "projects");
 // Claude Code keys a folder's sessions by its real path (an app under /tmp is under /private/tmp, a symlinked root
-// is its target).
-const projectDir = (cwd: string) => join(projectsDir(), realPath(cwd).replace(/[^A-Za-z0-9]/g, "-"));
+// is its target), in NFC.
+const projectDir = (cwd: string) => join(projectsDir(), projectName(realPath(cwd).normalize("NFC")));
+
+/**
+ * The folder's name under projects/, as Claude Code makes it: every character but a letter or a digit is a "-"; a
+ * name longer than 200 is cut there and told apart by a hash of the path (a Java-style string hash, in base 36).
+ * Otherwise the sessions of a deep folder are never found, and a turn followed in its TUI never ends.
+ */
+function projectName(path: string): string {
+  const name = path.replace(/[^A-Za-z0-9]/g, "-");
+  if (name.length <= 200) return name;
+  let hash = 0;
+  for (let i = 0; i < path.length; i++) hash = ((hash << 5) - hash + path.charCodeAt(i)) | 0;
+  return `${name.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
 
 /** Folder = session: the most recent session Claude Code has for this folder (what `claude --continue` picks). */
 function latestSession(cwd: string): string | null {
