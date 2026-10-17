@@ -8,7 +8,7 @@
 // driver, typed, tui, thread, remote (another app's agent, declared as one of this app's), status, history,
 // attachments. This file is the entry the rest of the core imports.
 export { type AgentRef, type AskInput, type Caller, type Conflict, type Ctx, type Holder, type ReplyPost, type Run, type SessionInfo } from "./agents/types.ts";
-export { activeRun, ask, askOrDecline, chainOf, closeQuietAgents, conflictOf, follow, inChain, NOBODY, notify, postReply, recoverAgents, redeliver, type StartOptions, startRun, stopTurn, turnsQueued, unattended, unattendedFrom, whenIdle } from "./agents/runs.ts";
+export { activeRun, ask, askOrDecline, chainOf, closeQuietAgents, conflictOf, follow, inChain, lineageOf, NOBODY, notify, onTurn, postReply, recoverAgents, redeliver, type StartOptions, startRun, stopTurn, triggerFiring, turnsQueued, unattended, unattendedFrom, whenIdle } from "./agents/runs.ts";
 export { type Capabilities } from "./agents/runner.ts";
 export { agentOf } from "./agents/identity.ts";
 export { callerOf } from "./agents/prompt.ts";

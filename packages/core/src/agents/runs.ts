@@ -8,6 +8,7 @@ import { broadcast } from "../events.ts";
 import { postOut } from "../outside.ts";
 import { drop, keep, letters, type MessageLetter } from "../inbox.ts";
 import { keyOf, type AgentRef } from "../refs.ts";
+import { notMade } from "../tree.ts";
 import type { AgentDecl } from "../extract.ts";
 import { driverFor, driverOf, drivers, type SessionDriver } from "./driver.ts";
 import { forget, watchAfter } from "./history.ts";
@@ -53,14 +54,56 @@ export const userMessage = (text: string, caller?: Caller): UIMessage => ({
 
 export type Push = (c: UIMessageChunk | null) => void;
 
-export function newRun(ref: AgentRef, user: UIMessage, caller: Caller, unattended = caller.kind === "trigger"): { run: Run; push: Push } {
-  const run: Run = { id: randomUUID(), ref, caller, unattended, user, chunks: [], subscribers: new Set(), done: false, result: Promise.resolve("") };
+export function newRun(ref: AgentRef, user: UIMessage, caller: Caller, unattended = caller.kind === "trigger", triggers = lineageOf(caller)): { run: Run; push: Push } {
+  const run: Run = { id: randomUUID(), ref, caller, unattended, triggers, user, chunks: [], subscribers: new Set(), done: false, result: Promise.resolve("") };
   const push = (c: UIMessageChunk | null) => {
     if (c) run.chunks.push(c), (run.lastAt = Date.now());
     for (const s of run.subscribers) s(c);
   };
   return { run, push };
 }
+
+// ---------------------------------------------------------------- where a run comes from, for turn triggers
+
+// A trigger's action running now → the triggers what fired it came from (a turn trigger fired by a turn some trigger
+// led to): a tell in that action carries them on, with the trigger itself.
+const firing = new Map<string, string[]>();
+
+/** For triggers.ts: the trigger `key` runs now, fired by something that came from `from` (none: a tick, a change). */
+export function triggerFiring(key: string, from: string[] | null) {
+  if (from) firing.set(key, from);
+  else firing.delete(key);
+}
+
+/**
+ * The triggers a message comes from: its caller's, when that is a trigger (and what fired that trigger came from), or
+ * an agent's run in progress (a delegation goes on as the run it came from). A person, a page, the engine: none.
+ */
+export function lineageOf(caller: Caller): string[] {
+  if (caller.kind === "trigger") {
+    const key = `${caller.node}#${caller.name}`;
+    return [...new Set([key, ...(firing.get(key) ?? [])])];
+  }
+  if (caller.kind === "agent") return activeRun(caller)?.triggers ?? [];
+  return [];
+}
+
+/** A turn starting or ending: for turn triggers (triggers.ts). reply: at the end, the final text of its reply. */
+export type TurnListener = (phase: "start" | "end", run: Run, reply?: string) => void;
+const turnListeners = new Set<TurnListener>();
+export function onTurn(cb: TurnListener): () => void {
+  turnListeners.add(cb);
+  return () => void turnListeners.delete(cb);
+}
+const turned: TurnListener = (phase, run, reply) => {
+  for (const l of turnListeners) {
+    try {
+      l(phase, run, reply);
+    } catch (e) {
+      console.warn(`a turn listener failed: ${(e as Error).message}`);
+    }
+  }
+};
 
 function runStarted(run: Run, chain: AgentRef[] | undefined, clientId?: string) {
   const { ref } = run;
@@ -69,6 +112,7 @@ function runStarted(run: Run, chain: AgentRef[] | undefined, clientId?: string) 
   active.set(keyOf(ref), run);
   chains.set(keyOf(ref), chain?.length ? chain : [ref]);
   broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "run-start", runId: run.id, user: run.user, clientId: clientId ?? null } });
+  turned("start", run);
 }
 
 /**
@@ -87,10 +131,12 @@ function runEnded(ctx: Ctx, run: Run, push: Push, text: string, how: RunFor) {
     chains.delete(keyOf(ref));
   }
   broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "run-end", runId: run.id } });
+  turned("end", run, text);
   if (!run.taken) run.stopped ? run.letter?.taken() : run.letter?.untaken(); // stopped before it began: not tried again
-  // An unattended run's result carries on what the trigger started: nobody is there for that run either.
+  // An unattended run's result carries on what the trigger started: nobody is there for that run either; and it comes
+  // from the triggers the run came from.
   const alone = run.unattended ? { unattended: true } : {};
-  if (replyTo) void ask(ctx, { ...replyTo, message: `${resultOf(ref, run.id)}\n${text || "(no reply)"}`, caller: { kind: "agent", ...ref }, ...alone }).catch((e) => console.warn(`could not report back to ${keyOf(replyTo)}: ${(e as Error).message}`));
+  if (replyTo) void ask(ctx, { ...replyTo, message: `${resultOf(ref, run.id)}\n${text || "(no reply)"}`, caller: { kind: "agent", ...ref }, ...alone, triggers: run.triggers }).catch((e) => console.warn(`could not report back to ${keyOf(replyTo)}: ${(e as Error).message}`));
   if (replyPost) void postReply(ctx, replyPost, text, run.id, ref).catch((e) => console.warn(`${keyOf(ref)}: could not send the reply to ${replyPost.url}: ${(e as Error).message}`));
 }
 
@@ -197,6 +243,8 @@ export async function redeliver(ctx: Ctx) {
 
 /** Start a run (after the agent's current one, unless its driver sends at once) and return it immediately. */
 export async function startRun(ctx: Ctx, input: AskInput, opts: StartOptions = {}): Promise<Run> {
+  // An instance of a dynamic page is made by opening its page or `tell --new`, never by a message on its way (tree.ts).
+  if (notMade(ctx.root, input.node)) throw new Error(`${input.node} is not made (an instance of a dynamic page that is not there, or no longer)`);
   // Written down before anything else (inbox.ts), under the run's id: kept until the harness has the message.
   const letter: MessageLetter = { kind: "message", id: opts.letter?.id ?? randomUUID(), at: opts.letter?.at ?? Date.now(), input: { ...input }, ...(opts.letter?.tries ? { tries: opts.letter.tries } : {}) };
   const late = opts.replyIfLate;
@@ -216,7 +264,7 @@ export async function startRun(ctx: Ctx, input: AskInput, opts: StartOptions = {
   const [decl, driver] = found;
   // Where it comes from, in the line itself (caller.ts); a person's words in their conversation arrive as they are.
   const message = callerLine(input.caller, input.message);
-  const { run, push } = newRun(ref, input.user ?? userMessage(input.message, input.caller), input.caller, input.unattended);
+  const { run, push } = newRun(ref, input.user ?? userMessage(input.message, input.caller), input.caller, input.unattended, input.triggers ?? lineageOf(input.caller));
   run.id = letter.id;
   run.letter = {
     taken: () => drop(ctx.root, letter.id),

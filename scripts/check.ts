@@ -11,7 +11,7 @@ import { bundleServerFile } from "../packages/core/src/actions.ts";
 import { addNode } from "../packages/core/src/install.ts";
 import { Nodes } from "../packages/core/src/nodes.ts";
 import { bundleRoute, listRoutes, routeInfo } from "../packages/core/src/routes.ts";
-import { listNodes, nodeDir } from "../packages/core/src/tree.ts";
+import { codeOf, hasFile, isDynamic, listNodes, nodeDir } from "../packages/core/src/tree.ts";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "pagent-check-"));
@@ -58,14 +58,40 @@ const createdZh = join(scratch, "created-zh");
 execFileSync(process.execPath, [join(repo, "packages/create-pagent/index.js"), createdZh, "--lang", "zh-CN"], { stdio: "ignore" });
 apps["create-pagent --lang zh-CN"] = createdZh;
 
+/**
+ * The dynamic pages ([x] and [...x] folders) no made instance of the app covers, each as a made-up instance ("check"
+ * for each dynamic segment, its folder made in the scratch copy): listNodes() only has the instances that are made, so
+ * a dynamic page would otherwise be checked only once someone had opened it.
+ */
+function madeUp(root: string, made: string[]): string[] {
+  const covered = new Set(made.map((m) => codeOf(root, m)?.code));
+  const out: string[] = [];
+  const walk = (code: string[], at: string[]) => {
+    for (const e of readdirSync(join(root, ...code), { withFileTypes: true })) {
+      if (!e.isDirectory() || /^[._]/.test(e.name) || e.name === "node_modules") continue;
+      const [c, a] = [[...code, e.name], [...at, isDynamic(e.name) ? "check" : e.name]];
+      const dir = join(root, ...c);
+      if (isDynamic(e.name) && (hasFile(dir, "page") || hasFile(dir, "layout")) && !covered.has("/" + c.join("/"))) {
+        mkdirSync(join(root, ...a), { recursive: true });
+        out.push("/" + a.join("/"));
+      }
+      walk(c, a);
+    }
+  };
+  walk([], []);
+  return out;
+}
+
 let failed = 0;
 let compiled = 0;
 for (const [label, root] of Object.entries(apps)) {
   const nodes = new Nodes(root);
-  for (const path of listNodes(root)) {
+  const made = listNodes(root);
+  for (const path of [...made, ...madeUp(root, made)]) {
     const errors: string[] = [];
-    const { dir, files, manifest } = await nodes.declarations(path);
-    errors.push(...manifest.errors);
+    const { dir, files, manifest, refused } = await nodes.declarations(path);
+    // A made-up instance's params may well be refused by its agents() (an unknown workspace): not an error of its code.
+    errors.push(...manifest.errors.filter((e) => e !== refused || made.includes(path)));
     for (const file of files) {
       const c = await nodes.module(path, file);
       errors.push(...c.errors.map((e) => `${file}.tsx: ${e}`));

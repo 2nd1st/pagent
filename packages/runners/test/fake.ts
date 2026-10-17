@@ -21,6 +21,7 @@
 //   !perm <command>      in the TUI: a permission prompt, as Claude Code's (OSC 7501 blocked, kind=permission); "1"
 //                        allows ("ran <command>"), Esc denies ("denied <command>")
 // Another process holding its session: <stateDir>/holder.json ({ pid, name? }), what its "holder" op then reports.
+// A thread session slow to start: <stateDir>/ready-delay (milliseconds) before it says it is ready.
 // With no !say / !slow / !sh step the reply is "echo: <message>". In the TUI, Esc stops the turn, and a message typed
 // while it runs is taken in before its next step (or, typed after the last one, is the next turn).
 // A stranger's one-off answer (the "stranger" op, SPEC 13.7): no steps run (it has no tools), nothing is written to a
@@ -411,6 +412,8 @@ async function sessionProgram(input: Input, commands: AsyncIterator<string>) {
       current = null;
     })();
   };
+  const delay = join(input.stateDir, "ready-delay");
+  if (existsSync(delay)) await new Promise((r) => setTimeout(r, Number(readFileSync(delay, "utf8"))));
   out({ type: "ready", threadId: thread });
 
   // What the thread's TUI sends: one JSON line each in <stateDir>/<thread>.typed.
@@ -494,6 +497,7 @@ else {
   // It answers strangers (and says nothing about its turns when they are headless).
   else if (input.op === "describe") out({ type: "describe", ...(TURNS ? { turns: TURNS } : {}), strangers: true });
   else if (input.op === "stranger") stranger(input);
+  else if (input.op === "move") out({ type: "moved", sessions: 0 }); // its sessions are in its state, which moved with the folder
   else if (input.op === "interactive" && TURNS === "tui") out({ type: "command", command: process.execPath, args: [self, "--tui", input.stateDir, sessionOf(input)], cwd: input.cwd, env: input.env, keys: { interrupt: ["\x1b"], allow: ["1"], deny: ["\x1b"] } });
   else if (input.op === "interactive" && TURNS === "thread") out({ type: "command", command: process.execPath, args: [self, "--thread-tui", input.stateDir, sessionOf(input)], cwd: input.cwd, env: input.env });
   else if (input.op === "interactive") out({ type: "command", command: "/bin/cat", args: [], cwd: input.cwd });

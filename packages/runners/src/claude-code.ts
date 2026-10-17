@@ -19,10 +19,14 @@
 //   { op: "stranger", message, systemPrompt, maxOutputTokens, options } → the chunks of a one-off answer to a stranger
 //     (SPEC 13.7): no tools, no session, its output capped (strangerOp)
 //   { op: "describe" } → {type:"describe", turns, outerSession, strangers}: what the core goes by (agents.ts, Capabilities)
-// Every op but describe may get `tui`, the pid of the agent's TUI while it runs: the session it is on is the agent's.
+//   { op: "move", from, to, cwd, stateDir } → {type:"moved", sessions}: the agent's folder moved (pagent mv); its sessions
+//     are moved to Claude Code's project of the new folder (moveOp)
+// Every op but describe may get `tui`, the pid of the agent's TUI while it runs: the session it is on is the agent's;
+// and `ownSession`: the agent works in a folder that is not its node's, so its session is its own (stateDir/session.json,
+// started fresh), never that folder's latest (SPEC 13.9).
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,12 +40,15 @@ import type { SessionUsage } from "./lib/usage.ts";
 const env = (k: string) => process.env[`PAGENT_${k}`];
 
 type Input = {
-  op: "ask" | "history" | "last" | "info" | "interactive" | "holder" | "follow" | "usage" | "describe" | "stranger";
+  op: "ask" | "history" | "last" | "info" | "interactive" | "holder" | "follow" | "usage" | "describe" | "stranger" | "move";
+  from?: string; // move: the folder the agent worked in (real path), and where it works now
+  to?: string;
   message?: string;
   cwd: string;
   stateDir: string;
   addDirs?: string[];
   seedSession?: string; // adopt an existing session (e.g. one started in a terminal) the first time
+  ownSession?: boolean; // its cwd is not its node's folder (others may work there): its session is its own, not the folder's latest
   tui?: number; // the agent's TUI is running, as this process (with `shell: true`, the shell it runs under)
   fork?: boolean; // interactive: open a copy of the session instead (another process has it open)
   env?: Record<string, string>; // the agent's identity for the `pagent` command, and PATH with it first
@@ -67,6 +74,7 @@ const out = (
     | { type: "mark" }
     | { type: "usage"; usage: SessionUsage | null; file: string | null }
     | { type: "taken"; text: string }
+    | { type: "moved"; sessions: number }
     | { type: "describe"; turns: "tui"; outerSession: { marker: string; prefix: string; keep: string[] }; strangers: true },
 ) =>
   process.stdout.write(JSON.stringify(chunk) + "\n");
@@ -102,14 +110,37 @@ function latestSession(cwd: string): string | null {
 }
 
 /**
+ * Whether the agent remembers its session (stateDir/session.json) rather than taking its folder's latest: one that
+ * adopted a session (sessionId), and one that works in a folder other than its node's (SPEC 13.9: the session belongs
+ * to the agent; many agents may work in one project folder, and the latest there is anybody's).
+ */
+const pinned = (input: Input) => !!input.seedSession || !!input.ownSession;
+
+/** A new session for an agent that keeps its own: its id, remembered now, for Claude Code to start it with --session-id. */
+function freshSession(input: Input): string {
+  const id = randomUUID();
+  saveSession(input.stateDir, id);
+  return id;
+}
+
+/**
+ * The arguments that put Claude Code on the agent's session: --resume it; an agent of its own whose session has no
+ * transcript yet (its TUI was opened and closed before a word) starts it with that id; none yet, a fresh one.
+ */
+function sessionArgs(input: Input, session: string | null): string[] {
+  if (session) return input.ownSession && !findTranscript(input.cwd, session) ? ["--session-id", session] : ["--resume", session];
+  return input.ownSession ? ["--session-id", freshSession(input)] : [];
+}
+
+/**
  * The agent's session. While its TUI runs, the one that TUI is on: a /clear there starts a new session, and the agent
  * moves with it (a pinned agent remembers the move, as it does a fork). Otherwise a pinned session (adopted
- * sessionId, or where it moved), or by default the folder's latest.
+ * sessionId, its own, or where it moved; none yet for a new agent of its own), or by default the folder's latest.
  */
 function currentSession(input: Input): string | null {
   const live = liveSession(input);
-  if (live && input.seedSession && live !== loadSession(input.stateDir, input.seedSession)) saveSession(input.stateDir, live);
-  return live ?? (input.seedSession ? loadSession(input.stateDir, input.seedSession) : latestSession(input.cwd));
+  if (live && pinned(input) && live !== loadSession(input.stateDir, input.seedSession)) saveSession(input.stateDir, live);
+  return live ?? (pinned(input) ? loadSession(input.stateDir, input.seedSession) : latestSession(input.cwd));
 }
 
 /** The git commands an agent runs on its own code without asking: committing, and looking at what it committed. */
@@ -294,8 +325,9 @@ function ownSkills(input: Input): OwnSkills | null {
 // ---------------------------------------------------------------- ask
 
 async function askOp(input: Input) {
-  // Pinned (adopted sessionId): resume exactly that session. Otherwise the folder is the session: --continue.
-  const pinned = input.seedSession ? loadSession(input.stateDir, input.seedSession) : null;
+  // Pinned (adopted sessionId, or its own): resume exactly that session, or start its own. Otherwise the folder is the
+  // session: --continue.
+  const session = pinned(input) ? loadSession(input.stateDir, input.seedSession) : null;
 
   // Native, additive only: the user's own Claude Code (CLAUDE.md, plugins, MCP servers, settings, sessions)
   // plus the agent's identity for the `pagent` command (and its pre-approval), the engine skills and a short system
@@ -317,7 +349,7 @@ async function askOp(input: Input) {
     ...(model ? ["--model", model] : []),
     ...settingsArgs(input, own),
     ...mcpArgs(input),
-    ...(pinned ? ["--resume", pinned] : ["--continue"]),
+    ...(pinned(input) ? sessionArgs(input, session) : ["--continue"]),
   ];
 
   out({ type: "start" });
@@ -326,7 +358,7 @@ async function askOp(input: Input) {
   let stderr = "";
   child.stderr.on("data", (c) => (stderr += c));
 
-  const t = new Translator(pinned ? input.stateDir : null, input.cwd, input.stateDir);
+  const t = new Translator(pinned(input) ? input.stateDir : null, input.cwd, input.stateDir);
   // Sub-agents write their own transcripts (stream-json has their tool calls, not their text): followed from there.
   const polling = setInterval(() => t.poll(), 250);
   let buf = "";
@@ -645,9 +677,10 @@ function historyOp(input: Input) {
 /** The native TUI on the same session, with the same additions as ask. */
 function interactiveOp(input: Input) {
   const session = currentSession(input);
-  // A fork is a new session with the history so far; a pinned agent moves to it.
+  // A fork is a new session with the history so far; a pinned agent moves to it. An agent of its own with no session
+  // yet starts one, remembered now.
   const fork = input.fork && session ? randomUUID() : null;
-  if (fork && input.seedSession) saveSession(input.stateDir, fork);
+  if (fork && pinned(input)) saveSession(input.stateDir, fork);
   const model = input.options?.model ?? env("DEFAULT_MODEL");
   const own = ownSkills(input);
   const args = [
@@ -658,8 +691,7 @@ function interactiveOp(input: Input) {
     ...(model ? ["--model", model] : []),
     ...settingsArgs(input, own, true),
     ...mcpArgs(input),
-    ...(session ? ["--resume", session] : []),
-    ...(fork ? ["--fork-session", "--session-id", fork] : []),
+    ...(fork ? ["--resume", session!, "--fork-session", "--session-id", fork] : sessionArgs(input, session)),
   ];
   // A folder it never worked in (its git root) gets a trust dialog first, which defaults to "No, exit".
   const trust = { prompt: "Yes, I trust this folder", keys: ["\x1b[B", "\r"], harness: "Claude Code" };
@@ -673,7 +705,7 @@ function interactiveOp(input: Input) {
 function infoOp(input: Input) {
   const sessionId = currentSession(input);
   const cd = `cd ${JSON.stringify(input.cwd)} && `;
-  out({ type: "info", sessionId, resume: input.seedSession ? (sessionId ? `${cd}claude --resume ${sessionId}` : null) : `${cd}claude --continue` });
+  out({ type: "info", sessionId, resume: pinned(input) ? (sessionId ? `${cd}claude --resume ${sessionId}` : null) : `${cd}claude --continue` });
 }
 
 /** The last `bytes` of a file, as whole lines. */
@@ -834,8 +866,8 @@ function findTranscript(cwd: string, sessionId: string): string | null {
  */
 async function followOp(input: Input) {
   const live = liveSession(input);
-  const pinned = live ?? (input.seedSession ? loadSession(input.stateDir, input.seedSession) : null);
-  const known = pinned ? findTranscript(input.cwd, pinned) : null;
+  const mine = live ?? (pinned(input) ? loadSession(input.stateDir, input.seedSession) : null);
+  const known = mine ? findTranscript(input.cwd, mine) : null;
   const dir = known ? dirname(known) : projectDir(input.cwd);
   const sizes = new Map<string, number>();
   const sessions = () => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".jsonl") && !f.startsWith("agent-")) : []);
@@ -854,7 +886,8 @@ async function followOp(input: Input) {
       // other sessions being written), else the pinned one, else whichever grew (a new one, after a first message or
       // a /clear, starts at 0).
       const grown = sessions().filter((f) => statSync(join(dir, f)).size > (sizes.get(f) ?? 0));
-      const pick = grown.find((f) => pinned && f === `${pinned}.jsonl`) ?? (live ? undefined : grown[0]);
+      // An agent of its own never takes another's (its folder is shared).
+      const pick = grown.find((f) => mine && f === `${mine}.jsonl`) ?? (live || input.ownSession ? undefined : grown[0]);
       if (!pick) continue;
       file = join(dir, pick);
       offset = sizes.get(pick) ?? 0;
@@ -990,6 +1023,43 @@ function usageOp(input: Input) {
   out({ type: "usage", usage, file });
 }
 
+// ---------------------------------------------------------------- move
+
+/**
+ * The agent's folder moved (`pagent mv`): Claude Code keeps a folder's sessions under projects/<that folder>, so the
+ * agent would find none in the new one (--continue, --resume). Every file there goes to the new folder's project, as
+ * if made there: each "cwd" in its transcripts that was the old folder (or under it) is the new one, and each file
+ * keeps its time (the latest is still the latest). A file the new project has already is left as it is. `from` is the
+ * old folder's real path (it is gone by now).
+ */
+function moveOp(input: Input) {
+  const from = input.from!;
+  const to = input.to!;
+  const src = projectDir(from);
+  const dst = projectDir(to);
+  if (src === dst || !existsSync(src)) return out({ type: "moved", sessions: 0 });
+  const was = (p: string) => JSON.stringify(p).slice(0, -1); // a JSON string's start: "/old (then " or /)
+  const rewrite = (line: string) => line.split(`"cwd":${was(from)}"`).join(`"cwd":${was(to)}"`).split(`"cwd":${was(from + "/")}`).join(`"cwd":${was(to + "/")}`);
+  let sessions = 0;
+  const move = (a: string, b: string) => {
+    mkdirSync(b, { recursive: true });
+    for (const name of readdirSync(a)) {
+      const s = join(a, name);
+      const d = join(b, name);
+      const st = statSync(s);
+      if (st.isDirectory()) move(s, d);
+      else if (!existsSync(d)) {
+        writeFileSync(d, name.endsWith(".jsonl") ? readFileSync(s, "utf8").split("\n").map(rewrite).join("\n") : readFileSync(s));
+        utimesSync(d, st.atimeMs / 1000, st.mtimeMs / 1000);
+        if (a === src && name.endsWith(".jsonl")) sessions++;
+      }
+    }
+  };
+  move(src, dst);
+  rmSync(src, { recursive: true, force: true });
+  out({ type: "moved", sessions });
+}
+
 // ---------------------------------------------------------------- describe
 
 /**
@@ -1018,4 +1088,5 @@ else if (input.op === "follow") await followOp(input);
 else if (input.op === "usage") usageOp(input);
 else if (input.op === "describe") describeOp();
 else if (input.op === "stranger") await strangerOp(input);
+else if (input.op === "move") moveOp(input);
 else out({ type: "error", errorText: `unknown op ${(input as Input).op}` });

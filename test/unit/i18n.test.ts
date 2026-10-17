@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { quietNote } from "../../packages/bridge/src/agent-ui.tsx";
 import { callerLabel } from "../../packages/bridge/src/contract.ts";
-import { labelOf, langOf, sayIn, setLanguage, t, toolWord, WORDS } from "../../packages/bridge/src/i18n.ts";
+import { labelOf, langOf, sayIn, setAppLanguage, setLanguage, t, toolWord, WORDS } from "../../packages/bridge/src/i18n.ts";
 import { subagentDoing, toolDoing, type Activity } from "../../packages/core/src/agents/status.ts";
 import { repo } from "../lib/app.ts";
 
@@ -44,6 +44,17 @@ test("by default the words are English, as they always were; the server's labels
   // A language the table has no words for: English.
   setLanguage("fr");
   assert.equal(t("console.placeholder"), "Message, or / for commands");
+});
+
+test("a reader's choice wins over the app's language; null goes back to the app's", () => {
+  setAppLanguage("zh-CN");
+  assert.equal(t("app.back"), "返回");
+  setLanguage("en");
+  assert.equal(t("app.back"), "Back");
+  setLanguage(null);
+  assert.equal(t("app.back"), "返回");
+  setAppLanguage(null);
+  assert.equal(t("app.back"), "Back");
 });
 
 test("the labels the server makes without values are the table's English for their keys", () => {

@@ -90,3 +90,25 @@ test("server code: the same addresses, the same errors", async () => {
   assert.match(await server("~/tasks"), /"~\/tasks" is the node \/tasks; the "use server" file beside it is "~\/tasks\.ts"/);
   assert.match(await server("~/ideas/lib/db"), /ideas\/lib\/db\.ts is not directly in a node's folder/);
 });
+
+test("beside a dynamic folder at the root, the root's \"use server\" file keeps its address while no instance has that name", async () => {
+  const app = mkdtempSync(join(tmpdir(), "pagent-imports-dyn-"));
+  try {
+    const files: Record<string, string> = {
+      "page.tsx": NODE,
+      "actions.ts": SERVER,
+      "[ws]/layout.tsx": `export default function L({ children }) { return children; }\n`,
+      "[ws]/[id]/page.tsx": `import { add } from "~/actions";\nexport default function S() { return <button onClick={() => add({ n: 1 })} />; }\n`,
+      "[ws]/[id]/actions.ts": `"use server";\nimport { add } from "~/actions";\nexport async function go() { return add({ n: 1 }); }\n`,
+    };
+    for (const [rel, code] of Object.entries(files)) (mkdirSync(dirname(join(app, rel)), { recursive: true }), writeFileSync(join(app, rel), code));
+    mkdirSync(join(app, "demo/one"), { recursive: true }); // an instance, to compile the page as
+    assert.equal((await compileFile(app, "/demo/one", "page")).errors.join("\n"), "");
+    await bundleServerFile(app, join(app, "[ws]/[id]/actions.ts"));
+    // An instance that is made is a node, as a static one is: the address is its.
+    mkdirSync(join(app, "actions"));
+    assert.match((await compileFile(app, "/demo/one", "page")).errors.join("\n"), /"~\/actions" is the node \/actions; the "use server" file beside it is "~\/actions\.ts"/);
+  } finally {
+    rmSync(app, { recursive: true, force: true });
+  }
+});

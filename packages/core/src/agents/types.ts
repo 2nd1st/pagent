@@ -16,6 +16,7 @@ export type AskInput = AgentRef & {
   replyPost?: ReplyPost; // a message from outside: when the run ends, its result is POSTed to the sender (tell.ts)
   interject?: boolean; // into the turn in progress, if the agent is in one and its harness takes that; else queued
   unattended?: boolean; // nobody is there for it: it comes from a trigger, through the agents that passed it on (runs.ts)
+  triggers?: string[]; // the triggers it comes from (runs.ts, lineageOf); none given: worked out from its caller
 };
 
 // Where agents reach this app, through the daemon (so it outlives server restarts): hookBase, its HTTP proxy (for
@@ -36,6 +37,11 @@ export type Run = {
   caller: Caller; // who started it
   /** Nobody is there to approve or answer: a trigger started it, or a run that one started (runs.ts, unattendedFrom). */
   unattended: boolean;
+  /**
+   * The triggers it comes from, directly (its caller is one) or through agents passing it on (a delegation, and its
+   * result coming back), as node#name: a turn trigger never fires for a turn its own action led to (triggers.ts).
+   */
+  triggers: string[];
   user: UIMessage;
   /** When it started (ms): how long the agent has been at it, for status views. */
   startedAt?: number;

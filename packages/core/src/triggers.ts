@@ -12,8 +12,16 @@
 // a burst is not lost), and a change during that run too is left for the next change (an action that changes what it
 // watches on every run stops). An agent the action tells is not waited for: if it writes the watched file, that is a
 // change like any other, and the action decides again (so it tells only when there is something new).
+//
+// Turn: a turn of one of the node's agents starts, and ends (every run: a person's, a page's, another agent's, a
+// trigger's, `pagent tell`, nobody watching or not); the action gets the turn (TurnEvent, in the bridge's
+// declarations.ts). Each event runs it once, in order: a turn's start and end are never skipped (they queue while it
+// runs, up to MAX_QUEUED). It never fires for a turn its own action led to (it told the agent, directly or through
+// agents passing it on: runs.ts, lineageOf), as a watch's own writes do not wake it: an action may tell its agent.
 import { runAction, valueText } from "./actions.ts";
+import { onTurn, triggerFiring, type Run } from "./agents.ts";
 import { axModule } from "./ax-module.ts";
+import { callerName } from "./caller.ts";
 import { endTurn } from "./quit.ts";
 import { dataVersion, dataVersions } from "./data.ts";
 import { broadcast, onEvent } from "./events.ts";
@@ -39,21 +47,34 @@ const last = new Map<string, TriggerRun>();
 const failed = new Map<string, string>(); // its action's last failure (first line), while it keeps failing
 const keyOf = (node: string, name: string) => `${node}#${name}`;
 
+/** What a turn trigger's run is for: the turn (its action's input), and the triggers that turn came from. */
+type TurnFire = { why: string; input: TurnEvent; from: string[] };
+/** The bridge's TurnEvent (declarations.ts): each package is built on its own, so each writes it down. */
+type TurnEvent = { phase: "start" | "end"; runId: string; agent: string; message: string; from: string; reply?: string };
+const turnQueue = new Map<string, TurnFire[]>(); // a turn trigger's events that came while it ran
+const MAX_QUEUED = 50;
+
 /** Read every node's triggers (again whenever code changes). */
 async function arm(ctx: Ctx) {
-  const next: Armed[] = [];
-  for (const node of listNodes(ctx.root)) {
-    const d = await ctx.nodes.declarations(node).catch(() => null);
-    if (!d) continue;
-    const app = typeof d.manifest.config?.app === "string" ? d.manifest.config.app : undefined;
-    for (const decl of d.manifest.triggers) {
-      const w = decl.watch ? watchOf(decl.watch) : null;
-      next.push({ node, decl, cron: decl.cron ? cronFields(decl.cron) : null, ...(app ? { app } : {}), ...(w ? { watch: { node: w.node ?? node, pattern: w.pattern } } : {}) });
-    }
-  }
+  const nodes = listNodes(ctx.root);
+  const next = (await Promise.all(nodes.map((node) => armedOf(ctx, node)))).flat();
   armed = next;
+  armedNodes = new Set(nodes);
   armTimers(ctx, next);
   armApps(ctx, next);
+}
+
+let armedNodes = new Set<string>(); // the nodes the last arm read
+
+/** A node's triggers, as armed. */
+async function armedOf(ctx: Ctx, node: string): Promise<Armed[]> {
+  const d = await ctx.nodes.declarations(node).catch(() => null);
+  if (!d) return [];
+  const app = typeof d.manifest.config?.app === "string" ? d.manifest.config.app : undefined;
+  return d.manifest.triggers.map((decl) => {
+    const w = decl.watch ? watchOf(decl.watch) : null;
+    return { node, decl, cron: decl.cron ? cronFields(decl.cron) : null, ...(app ? { app } : {}), ...(w ? { watch: { node: w.node ?? node, pattern: w.pattern } } : {}) };
+  });
 }
 
 // A tick while the last run still goes is skipped (fire never overlaps a trigger with itself). An app trigger's
@@ -132,24 +153,35 @@ export function appWatch(node: string, name: string): string | null {
   return appWatches.get(keyOf(node, name))?.state ?? null;
 }
 
-/** Fire one trigger now: run its action. Resolves with what happened (its output, or why it failed). */
-function fire(ctx: Ctx, a: Armed, why: string, rerun = 0): Promise<string> {
+/**
+ * Fire one trigger now: run its action. Resolves with what happened (its output, or why it failed). turn: a turn
+ * trigger's event, which waits for the run in progress instead of being skipped.
+ */
+function fire(ctx: Ctx, a: Armed, why: string, rerun = 0, turn?: TurnFire): Promise<string> {
   const key = keyOf(a.node, a.decl.name);
-  if (running.has(key)) return Promise.resolve(`Trigger ${key} is still running; skipped.`);
+  if (running.has(key)) {
+    if (!turn) return Promise.resolve(`Trigger ${key} is still running; skipped.`);
+    const queue = turnQueue.get(key) ?? [];
+    if (queue.length >= MAX_QUEUED) console.error(`trigger ${key}: ${MAX_QUEUED} turns wait for its action; the oldest is dropped`);
+    turnQueue.set(key, [...queue.slice(-(MAX_QUEUED - 1)), turn]);
+    return Promise.resolve(`Trigger ${key} is still running; this turn's ${turn.input.phase} waits for it.`);
+  }
   clearTimeout(paused.get(key)); // this run sees the change it waited for
   paused.delete(key);
-  const result = run(ctx, a, why, rerun);
+  const result = run(ctx, a, why, rerun, turn);
   running.set(key, result);
   return result;
 }
 
-async function run(ctx: Ctx, a: Armed, why: string, rerun: number): Promise<string> {
+async function run(ctx: Ctx, a: Armed, why: string, rerun: number, turn?: TurnFire): Promise<string> {
   const { node, decl } = a;
   const key = keyOf(node, decl.name);
   broadcast({ type: "trigger", node, name: decl.name, why });
+  // What its action tells comes from it, and from what the turn that fired it came from (runs.ts, lineageOf).
+  triggerFiring(key, turn?.from ?? null);
   let result = "";
   try {
-    const r = await runAction(ctx.root, ctx.nodes, node, decl.run, undefined, { caller: { kind: "trigger", node, name: decl.name }, turn: `trigger:${key}` });
+    const r = await runAction(ctx.root, ctx.nodes, node, decl.run, turn?.input, { caller: { kind: "trigger", node, name: decl.name }, turn: `trigger:${key}` });
     if (r.ok) {
       failed.delete(key);
       return (result = valueText(r).trim() || "(no output)");
@@ -164,8 +196,15 @@ async function run(ctx: Ctx, a: Armed, why: string, rerun: number): Promise<stri
     return (result = `Trigger failed: ${(e as Error).message}`);
   } finally {
     running.delete(key);
+    triggerFiring(key, null);
     void endTurn(`trigger:${key}`); // a `quit: "after"` bridge's app it launched
     last.set(key, { at: new Date().toISOString(), why, result: result.slice(0, 500) });
+    const next = turnQueue.get(key)?.shift();
+    if (next) {
+      const now = armedNodes.has(node) ? armed.find((x) => keyOf(x.node, x.decl.name) === key) : a; // as declared by then
+      if (now?.decl.turn) void fire(ctx, now, next.why, 0, next);
+      else turnQueue.delete(key);
+    }
     if (a.watch) seen.set(key, fingerprint(ctx, a.watch));
     if ((a.watch || decl.app) && dirty.delete(key)) {
       const again = `${a.watch ? "watch" : "app"} (changed while running)`;
@@ -207,8 +246,31 @@ function due(fields: number[][], t: Date): boolean {
   return domAny || dowAny ? d && w : d || w; // cron: when both day fields are restricted, either one matches
 }
 
+// A node's turn events, one after the other: a node made a moment ago (a helper, `tell --new`) is not armed yet when its
+// first turn starts, so its triggers are read then, and its turn's end waits for that.
+const turnOrder = new Map<string, Promise<void>>();
+
+/** A turn starting or ending: the turn triggers of its agent's node that follow that agent, unless it led to it. */
+function turnFired(ctx: Ctx, phase: "start" | "end", r: Run, reply?: string) {
+  const node = r.ref.node;
+  const message = r.user.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+  const input: TurnEvent = { phase, runId: r.id, agent: r.ref.agent, message, from: callerName(r.caller), ...(phase === "end" ? { reply: reply ?? "" } : {}) };
+  const why = `turn ${phase} of ${r.ref.agent}`;
+  const next = (turnOrder.get(node) ?? Promise.resolve()).then(async () => {
+    const triggers = armedNodes.has(node) ? armed.filter((a) => a.node === node) : await armedOf(ctx, node);
+    for (const a of triggers) {
+      const t = a.decl.turn;
+      if (!t || (t !== true && t !== r.ref.agent)) continue;
+      if (r.triggers.includes(keyOf(a.node, a.decl.name))) continue; // its own action's doing: no loop
+      void fire(ctx, a, why, 0, { why, input, from: r.triggers });
+    }
+  });
+  turnOrder.set(node, next.catch(() => {}));
+}
+
 export async function startTriggers(ctx: Ctx) {
   await arm(ctx);
+  onTurn((phase, r, reply) => turnFired(ctx, phase, r, reply));
   let rearm: NodeJS.Timeout | undefined;
   onEvent((e) => {
     if (e.type === "code") {

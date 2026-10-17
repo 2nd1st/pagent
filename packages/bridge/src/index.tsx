@@ -2,13 +2,13 @@
 // hooks declare (useAgent / useEmit / useData / useAsk), components render (<Chat>, imported nodes).
 // What the host provides is in contract.ts, the declaration types in declarations.ts; this file has the hooks and the
 // imported nodes, and exports all of it.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType } from "react";
 import type { UIMessage } from "ai";
 import { DataConflict, type AgentEvent, type AgentRef, type HostApi } from "./contract.ts";
 import { instanceDir } from "./instance.ts";
 
 export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type RateLimit, type Say, type SessionUsage, type SubagentInfo } from "./contract.ts";
-export type { Agents, AgentSpec, Config, McpServer, RemoteAgentSpec, Tools, Triggers } from "./declarations.ts";
+export type { Agents, AgentSpec, Config, McpServer, Params, RemoteAgentSpec, Tools, Triggers, TurnEvent } from "./declarations.ts";
 
 export const HostContext = createContext<HostApi | null>(null);
 
@@ -283,6 +283,44 @@ export function useNode(): { path: string } {
   return { path: useScope().path };
 }
 
+// ---------------------------------------------------------------- where the app is (as Next.js's next/navigation)
+
+/** The page the shell shows: its params. The shell provides it (a page's useParams, a layout's too). */
+export type RouteInfo = { params: Record<string, string | string[]> };
+export const RouteContext = createContext<RouteInfo | null>(null);
+
+/**
+ * Go to a page of the app, as a link does, without reloading: after a rename, a delete, a "New session". History
+ * entries count how deep into the app they are, so the shell offers "back" only when there is a page of the app to go
+ * back to.
+ */
+export function navigate(url: string) {
+  history.pushState({ depth: ((history.state as { depth?: number } | null)?.depth ?? 0) + 1 }, "", url);
+  dispatchEvent(new PopStateEvent("popstate"));
+}
+
+const onLocation = (cb: () => void) => (addEventListener("popstate", cb), () => removeEventListener("popstate", cb));
+const pathNow = () => {
+  try {
+    return decodeURIComponent(location.pathname);
+  } catch {
+    return location.pathname;
+  }
+};
+
+/** The address on screen ("/studio/demo/修登录": as people read it), as it changes: a layout that stays mounted follows it. */
+export function usePathname(): string {
+  return useSyncExternalStore(onLocation, pathNow, () => "/");
+}
+
+/**
+ * The params of the page on screen (its [segments]: { ws: "demo", id: "fix-login" }), wherever this is called: a layout
+ * gets its own as a prop, and the page's here (the session open under a sidebar).
+ */
+export function useParams<P extends Record<string, string | string[]> = Record<string, string | string[]>>(): P {
+  return (useContext(RouteContext)?.params ?? {}) as P;
+}
+
 // ---------------------------------------------------------------- imported nodes
 
 /**
@@ -337,7 +375,9 @@ export function nodeHook<H extends (...args: any[]) => any>(path: string, agents
   return bound as H;
 }
 
-export { Chat, useAgentChat } from "./chat.tsx";
+export { Chat, useAgentChat, type ChatTurn } from "./chat.tsx";
 export { NodeCard, pageUrl, parseCard, propsFromQuery, splitCards, type CardRef, type CardsShown } from "./cards.tsx";
-export { AgentBar, AgentConsole, AgentFab, QuestionCard, Terminal, doingOf, quietNote, useAgentStatus } from "./agent-ui.tsx";
+export { AgentBar, AgentConsole, AgentFab, QuestionCard, Terminal, doingOf, quietNote, useAgentStatus, useComposer, type Completion } from "./agent-ui.tsx";
+// The language the app is read in (the reader's choice, else its metadata.lang), and the reader's choice.
+export { setLanguage, useLanguage } from "./i18n.ts";
 export type { UIMessage };

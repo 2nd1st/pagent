@@ -155,6 +155,23 @@ describe("claude-code: the agent's session is the one its TUI is on", () => {
     // Another process on that session (here the same one, which the app does not know as the agent's TUI) holds it.
     assert.equal(opOf("claude-code", { op: "holder", cwd, stateDir, seedSession: "side" }, env)[0].holder.pid, tuiPid);
   });
+
+  test("an agent of its own (cwd not its node's folder): never the folder's latest; its TUI starts its session, and it follows its TUI", () => {
+    const own = { stateDir: join(dir, "own"), ownSession: true };
+    const tuiArgs = () => opOf("claude-code", { op: "interactive", cwd, ...own }, env)[0].args as string[];
+    const after = (a: string[], f: string) => (a.includes(f) ? a[a.indexOf(f) + 1] : null);
+    assert.equal(sessionOf(own), null); // "side" is the folder's latest, and not its
+    const first = tuiArgs();
+    const id = after(first, "--session-id");
+    assert.ok(id && !first.includes("--resume") && !first.includes("--continue"));
+    assert.equal(sessionOf(own), id);
+    // Opened and closed before a word, it has no transcript to resume: that id again.
+    assert.equal(after(tuiArgs(), "--session-id"), id);
+    // Its TUI went to another session (a /clear): it moves there, and stays once the TUI is gone.
+    assert.equal(sessionOf({ ...own, tui: shell.pid }), "cleared");
+    assert.equal(sessionOf(own), "cleared");
+    assert.equal(after(tuiArgs(), "--resume"), "cleared");
+  });
 });
 
 test("claude-code: a live process holds its session in any locale (the registry has its start time in the C one)", () => {

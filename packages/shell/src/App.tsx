@@ -2,8 +2,8 @@
 // title in a rail, the trail of titles above the page, back after a card), and permission prompts and forms from any
 // agent.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { HostContext, propsFromQuery, provideHost, QuestionCard, type Question } from "@pagent/bridge";
-import { setLanguage, t, tWith, useLanguage } from "@pagent/bridge/i18n";
+import { HostContext, propsFromQuery, provideHost, QuestionCard, RouteContext, type Question, type RouteInfo } from "@pagent/bridge";
+import { chosenLanguage, setAppLanguage, t, tWith, useLanguage } from "@pagent/bridge/i18n";
 import { api, createHost, httpLoader, onHostEvent, qs } from "./host.ts";
 import { McpAppFrame } from "./McpAppFrame.tsx";
 import { TerminalView } from "./TerminalView.tsx";
@@ -15,36 +15,37 @@ type RouteEntry = { path: string; file: "page" | "layout" };
 
 // The engine's words are in the app's language, its home page's metadata.lang (i18n.ts): as this browser last saw it
 // until the pages come, so a reload does not start in English. So is the page's, unless the page says its own; where
-// neither says one, it is the reader's (pages are written in the language people write in).
+// neither says one, it is the reader's (pages are written in the language people write in). A reader's own choice
+// (setLanguage from a page: a language toggle) wins over both.
 const LANG_KEY = "pagent.lang";
 const READER = navigator.language || "en";
 let stored: string | null = null;
 try {
   stored = localStorage.getItem(LANG_KEY);
 } catch {}
-setLanguage(stored);
-document.documentElement.lang = stored ?? READER;
+setAppLanguage(stored);
+document.documentElement.lang = chosenLanguage() ?? stored ?? READER;
 
 /**
  * The app's language, from its pages (null: it declares none), said to the engine's words and remembered here; and the
- * page's, said to the browser (<html lang>: fonts, line breaking, quotes): the one the page at `path` says it is in,
- * else the app's, else the reader's.
+ * page's, said to the browser (<html lang>: fonts, line breaking, quotes): the reader's choice, else the one the page
+ * at `path` says it is in, else the app's, else the reader's browser's.
  */
 function useAppLanguage(pages: Page[] | null, path: string) {
   const lang = pages ? (pages.find((p) => p.path === "/")?.lang ?? null) : undefined;
   useEffect(() => {
     if (lang === undefined) return; // not known yet
-    setLanguage(lang);
+    setAppLanguage(lang);
     try {
       if (lang) localStorage.setItem(LANG_KEY, lang);
       else localStorage.removeItem(LANG_KEY);
     } catch {}
   }, [lang]);
   const page = pages ? (pages.find((p) => p.path === path)?.lang ?? lang) : undefined;
+  const tag = useLanguage(); // renders again when the reader picks one
   useEffect(() => {
-    if (page !== undefined) document.documentElement.lang = page ?? READER;
-  }, [page]);
-  useLanguage();
+    if (page !== undefined) document.documentElement.lang = chosenLanguage() ?? page ?? READER;
+  }, [page, tag]);
 }
 
 /** The page's path, and its query: the page's props (`/weather?city=Lisbon` renders /weather with city="Lisbon"). */
@@ -72,20 +73,27 @@ function useLocation(): { path: string; search: string; depth: number } {
   return loc;
 }
 
-function RouteView({ path, search }: { path: string; search: string }) {
-  const [chain, setChain] = useState<RouteEntry[] | null | "missing">(null);
+/** What a URL shows: its layouts and page, the page's params, whether it fills the window (metadata.fill). */
+type Route = { chain: RouteEntry[]; params: Record<string, string | string[]>; fill: boolean };
+
+/** The route at `path`, again when code changes (null: not known yet). */
+function useRoute(path: string): Route | null | "missing" {
+  const [route, setRoute] = useState<Route | null | "missing">(null);
   const [tick, setTick] = useState(0);
   useEffect(() => onHostEvent((e) => e.type === "code" && setTick((t) => t + 1)), []);
   useEffect(() => {
-    api<{ chain: RouteEntry[] }>(`/_pagent/route?${qs({ path })}`).then((r) => setChain(r.chain), () => setChain("missing"));
+    api<Route>(`/_pagent/route?${qs({ path })}`).then(setRoute, () => setRoute("missing"));
   }, [path, tick]);
+  return route;
+}
 
+function RouteView({ route, path, search }: { route: Route | null | "missing"; path: string; search: string }) {
   const props = useMemo(() => propsFromQuery(search), [search]);
-  if (chain === null) return null;
-  if (chain === "missing") return <div className="pagent-empty">{tWith("app.missing", {}, "path", <code key="path">{path}</code>)}</div>;
+  if (route === null) return null;
+  if (route === "missing") return <div className="pagent-empty">{tWith("app.missing", {}, "path", <code key="path">{path}</code>)}</div>;
   return (
     <>
-      {chain.reduceRight<ReactNode>(
+      {route.chain.reduceRight<ReactNode>(
         (inner, entry) => (
           <NodeFrame key={`${entry.path}:${entry.file}`} path={entry.path} file={entry.file} props={entry.file === "page" ? props : undefined}>
             {inner}
@@ -206,6 +214,11 @@ export function App() {
   }, []);
   const pages = usePages();
   useAppLanguage(pages, path);
+  const route = useRoute(path);
+  // For the pages' useParams (and a layout's: the page's under it). Kept until the next route is known.
+  const params = route && route !== "missing" ? route.params : null;
+  const known = useRef<RouteInfo>({ params: {} });
+  const routeInfo = useMemo<RouteInfo>(() => (params ? (known.current = { params }) : known.current), [params]);
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
   const statuses = useStatuses(pages, (key, before, after) => notifyChange(key, before, after, pagesRef.current));
@@ -252,8 +265,10 @@ export function App() {
                 </button>
               )}
             </header>
-            <main className="pagent-main">
-              <RouteView path={path} search={search} />
+            <main className="pagent-main" data-fill={(route && route !== "missing" && route.fill) || undefined}>
+              <RouteContext.Provider value={routeInfo}>
+                <RouteView route={route} path={path} search={search} />
+              </RouteContext.Provider>
             </main>
           </div>
         </div>

@@ -3,7 +3,7 @@
 // that turn); a message typed into its TUI, one more client of the thread, is a run of its own; a restarted server
 // takes the session and its turn in progress back; the service the threads live on runs as its runner says.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fakeThreadRunner, lines, testApp, until, type TestApp } from "../lib/app.ts";
@@ -17,7 +17,7 @@ describe("an agent on a shared thread", () => {
   const history = async (node: string) => lines((await app.get(`/_pagent/history?node=${node}&agent=bot`)).messages);
 
   before(async () => {
-    app = await testApp({ "one/page.tsx": page, "steer/page.tsx": page, "tui/page.tsx": page, "restart/page.tsx": page, "stop/page.tsx": page }, { env: { FAKE_DROP_X: "1" } });
+    app = await testApp({ "one/page.tsx": page, "steer/page.tsx": page, "tui/page.tsx": page, "restart/page.tsx": page, "stop/page.tsx": page, "early/page.tsx": page }, { env: { FAKE_DROP_X: "1" } });
   });
   after(() => app.close());
 
@@ -48,6 +48,18 @@ describe("an agent on a shared thread", () => {
     assert.equal((await status("/stop")).busy, false);
     assert.equal((await app.post("/_pagent/stop", { node: "/stop", agent: "bot" })).said, null);
     assert.equal(await ask("/stop", "!say after"), "after");
+  });
+
+  test("stop while its session is still starting: the message is never sent, and the run ends", async () => {
+    mkdirSync(join(app.root, "early", ".state", "bot"), { recursive: true });
+    writeFileSync(join(app.root, "early", ".state", "bot", "ready-delay"), "1500");
+    const run = ask("/early", "!sleep 30000\n!say never");
+    await until(async () => (await status("/early")).busy, "the run");
+    assert.equal((await app.post("/_pagent/stop", { node: "/early", agent: "bot" })).said, "interrupted the turn in progress");
+    assert.equal(await run, "");
+    await until(async () => !(await status("/early")).busy, "the run's end");
+    assert.deepEqual(await history("/early"), []); // never sent
+    assert.equal(await ask("/early", "!say after"), "after");
   });
 
   test("a message typed into the TUI is a run of its own; the app's messages still go to the thread", async () => {

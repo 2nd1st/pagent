@@ -1,12 +1,14 @@
-// The commands about the app's nodes: what there is (tree, status), what a node can do and running it (run).
+// The commands about the app's nodes: what there is (tree, status), what a node can do and running it (run), and
+// moving one (mv) or removing an instance of a dynamic page (rm).
 import { z } from "zod";
 import { runAction, valueText, type ActionResult } from "../actions.ts";
+import { moveNode, removeInstance, type Moved } from "../moves.ts";
 import type { ActionDecl } from "../extract.ts";
 import { screenJob } from "../screen.ts";
 import { appWatch, lastRun } from "../triggers.ts";
 import { agentStatus, type Ctx } from "../agents.ts";
 import { agentTurn, endWhenIdle } from "../quit.ts";
-import { hasFile, listNodes, nodeDir } from "../tree.ts";
+import { codeDir, hasFile, listNodes } from "../tree.ts";
 import { folderOf, inputOf, json, nodeArg, quote, type Command, type Output } from "./common.ts";
 
 const appWhen = (t: true | { id?: string; label?: string; role?: string }) =>
@@ -82,13 +84,14 @@ export const treeCommand: Command = {
         path,
         ...(m.title ? { title: m.title } : {}),
         folder: folderOf(ctx, path),
-        route: !path.split("/").some((s) => s.startsWith(".")) && hasFile(nodeDir(ctx.root, path), "page"),
+        route: !path.split("/").some((s) => s.startsWith(".")) && hasFile(codeDir(ctx.root, path), "page"),
+        ...(i.code ? { instanceOf: i.code, params: i.params } : {}),
         agents: m.agents.map((a) => `${path}#${a.name} (${a.runner})`),
         actions: m.actions.map((a) => a.name),
         tools: m.tools.map((t) => t.name),
         ...(typeof m.config?.app === "string" ? { bridgeTo: m.config.app } : {}),
         triggers: m.triggers.map((t) => {
-          const when = [t.cron && `cron ${t.cron}`, t.app && `app ${appWhen(t.app)} (${appWatch(path, t.name) ?? "not watched"})`, t.every && (t.app ? `every ${t.every} while the app cannot be watched` : `every ${t.every}`), t.watch && `watch ${t.watch}`].filter(Boolean).join(", ");
+          const when = [t.cron && `cron ${t.cron}`, t.app && `app ${appWhen(t.app)} (${appWatch(path, t.name) ?? "not watched"})`, t.every && (t.app ? `every ${t.every} while the app cannot be watched` : `every ${t.every}`), t.watch && `watch ${t.watch}`, t.turn && `each turn of ${t.turn === true ? "its agents" : t.turn} (start and end)`].filter(Boolean).join(", ");
           return { name: t.name, when, run: t.run, last: lastRun(path, t.name) ?? null };
         }),
       });
@@ -134,5 +137,45 @@ export const runOnNodeCommand: Command = {
     }
     if (manifest.tools.some((t) => t.name === name)) return screenJob(node, { action: "tool", name, input });
     throw new Error(`${node} has no action or page tool "${name}".\n\n${await nodeHelp(ctx, node)}`);
+  },
+};
+
+/** What a move did, for whoever asked (an agent, the person's terminal). */
+export function movedText(m: Moved): string {
+  return [
+    `Moved ${m.from} to ${m.to}.`,
+    m.sessions.length ? `Sessions: ${m.sessions.join("; ")}.` : "",
+    m.closed.length ? `Closed the terminals of ${m.closed.join(", ")} (they open again at the new place when needed).` : "",
+    m.files.length ? `References changed in: ${m.files.join(", ")}.` : "",
+    "The engine keeps no versions: commit the move (both folders and the files above).",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export const mvCommand: Command = {
+  name: "mv",
+  usage: "<node> <new path>",
+  about: "Move a node to another address, with everything it has: its code and data, its agents' state and sessions, the app's references to it (imports, addresses, its message route), the engine's state about it. Refused while an agent there is in a turn.",
+  more:
+    "An instance of a dynamic page (studio/[ws]/[id]) moves to another address of that page: pagent mv /studio/demo/fix-login /studio/demo/fix-auth. " +
+    "The new address must be free. Data files are not rewritten (a record says where things were then). Commit the move afterwards.",
+  run: async ({ ctx, me }, a) => {
+    const [from, to] = a.pos;
+    if (!from || !to) throw new Error("usage: pagent mv <node> <new path>");
+    const node = nodeArg(ctx, from);
+    if (node !== "/" && (me.node === node || me.node.startsWith(node + "/"))) throw new Error(`${node} is where you are, in a turn: have the user run \`pagent mv ${node} ${to} --root ${ctx.root}\`, or another agent`);
+    return movedText(await moveNode(ctx, node, to));
+  },
+};
+
+export const rmCommand: Command = {
+  name: "rm",
+  usage: "<instance>",
+  about: "Remove an instance of a dynamic page (/studio/demo/fix-login of studio/[ws]/[id]): its folder, with its data and its agents' state, goes. Refused while its agent is in a turn.",
+  more: "Only instances: a page of its own is code (change it; git keeps it). Its harness keeps the session itself (claude --resume <id> still finds it).",
+  run: async ({ ctx }, a) => {
+    if (!a.pos[0]) throw new Error("usage: pagent rm <instance>");
+    return `Removed ${await removeInstance(ctx, a.pos[0])}.`;
   },
 };

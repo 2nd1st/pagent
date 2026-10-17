@@ -34,6 +34,13 @@ is everything that changed.
 | An instance's folder: its key with every character but letters, digits, `_` and `-` as `_` (`key="工作"` and `key="家庭"` were both `.mounts/__`, one instance) | One folder per key: other characters as `+` and their code (`.mounts/+5de5+4f5c`); keys of letters, digits, `_` and `-` keep their folder. Such an instance starts afresh from its node; the old folder stays where it was, and the instance's frame names it: move what you need from it, then delete it |
 | Two components under one parent with the same key (`<Todo key="a" />` and `<Notes key="a" />`): one folder, `.mounts/a`, so the second showed the first one's code and data | An error, on the page and in `pagent status` (`… would be one instance`; give each a distinct key). So are keys that differ only in case (one folder on a disk that ignores case, as macOS's does) and a key too long for a folder name |
 | An instance's folder was taken for whichever node its parent rendered with that key: change the import (or give the key to another component) and the new node got the old one's code and data | An instance remembers the node it is a fork of (`.state/fork.json` in its folder). Rendered as an instance of another node while the first is still there, it is an error that says what to do: give it another key (a new instance); or delete its folder (forked afresh, its data goes); or delete its `.state/fork.json` to keep its code and data for the new node. A node renamed or moved keeps its instances; an instance with no record yet (made before this, or without its `.state`, as in a fresh clone) is recorded for the first node that renders it |
+| An agent with a `cwd` elsewhere and no `sessionId` continued the latest session in that folder (anybody's: the one you last ran there in a terminal, say) | It has a session of its own: a fresh one the first time, remembered in its state and resumed after that (SPEC 13.9). To go on with the one it had, declare it: `sessionId: "<its id>"` (before upgrading: `/status` in its terminal shows it). An agent working in its node's own folder is unchanged |
+| Folders named `[x]` or `[...x]` were ordinary folders | They make a page dynamic (Next.js's dynamic segments): code for every address they match. Every other folder beside one is one of its instances; rename a folder that was not meant as that |
+| Moving a page with `mv` / `git mv` | `pagent mv <old> <new>`, which keeps its agents' sessions, state and the references to it (a plain move loses the conversation of an agent that worked in its folder) |
+| An agent with a `cwd` outside the app was told, like every agent, that it changes the app and must commit its node's code before and after each change | It is told that folder is its work, where the app and its node's code are, and that the app's code is not its work unless asked; nothing about committing (SPEC 13.10). Instructions that overrode the old words ("what pagent says about committing does not apply to you") can go; one that wants it to commit in its project says so itself |
+| The rail listed every instance of a dynamic page (every session of a studio) | Several instances of one dynamic page under one parent are one entry, named by that page's `metadata.title` ("Session · 5"), that opens to list them. Give such a page a `metadata.title` |
+| A conversation's folded exchange named the other agent by its name only (`main ↔ main` between two sessions) | By name, unless that is ambiguous in the line; then by its node's own name (`fix-tests ↔ add-titlecase`), else in full |
+| A page filled the window with `calc(100dvh - 44px)` and negative margins against the shell's padding | `export const metadata = { fill: true }` on the page or a layout: no padding, the window's height below the top bar; its outermost element takes `height: 100%`. `--pagent-top-height` is the bar's height |
 
 ## How to migrate an app
 
@@ -59,12 +66,18 @@ is everything that changed.
    import it in the page instead of `useAction`. Drop the `Actions` type import.
 3. **Words in instructions.** In `_agent.md` and other agent instructions: `pagent send` → `pagent tell`,
    `pagent escalate` → `pagent tell ..`, `pagent trigger` → `pagent run <node> <action>`.
-4. **Agent declarations.** Remove `kind`; rename `session` to `sessionId`; keep only harness rules in `allow`.
+4. **Agent declarations.** Remove `kind`; rename `session` to `sessionId`; keep only harness rules in `allow`. For an
+   agent with a `cwd` outside its node's folder whose conversation should go on, add the `sessionId` it has now
+   (before upgrading: `/status` in its terminal shows it).
 5. **Webhooks and outside callers.** A `webhook` trigger becomes `api/<path>/route.ts`; a script that called the
    engine's `/api/*` or `/mcp?node=` calls a route of yours instead.
 6. **Keys.** Each app or person that should reach one of your agents as itself gets a key: `pagent key create
    <node> --name <who> --root <app>`. Another pagent app puts it in its `.env` and names it in its remote agent's
    `key`; everyone without one is a stranger (a short answer, nothing into a session). A route that checked
    `caller.verified` checks `caller.key` instead.
-7. **Restart once.** `pagent daemon restart` (agents' terminals and turns started with the old paths), restart
+7. **Pages with a frame of their own.** Replace `calc(100dvh - 44px)` and negative margins with `metadata.fill`; a
+   copy of the shell's `go` with `navigate` from `"pagent"`, a `location.pathname` listener with `usePathname()`; a
+   language toggle of your own with `useLanguage()` / `setLanguage()` (the engine's words follow it too); DOM listeners
+   on `.pagent-composer textarea` with AgentConsole's `complete` and `useComposer().insert`.
+8. **Restart once.** `pagent daemon restart` (agents' terminals and turns started with the old paths), restart
    `pagent serve`, and reload open pages.

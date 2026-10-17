@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fromOf, rowsOf } from "../../packages/bridge/src/turns.ts";
+import { chatterLabels, fromOf, rowsOf } from "../../packages/bridge/src/turns.ts";
 import { parseLine } from "../../packages/core/src/caller.ts";
 import { repo } from "../lib/app.ts";
 
@@ -20,7 +20,7 @@ const user = (id: string, text: string, from?: string, kind?: string): UIMessage
 };
 const reply = (id: string, ...texts: string[]): UIMessage => ({ id, role: "assistant", parts: [{ type: "step-start" }, ...texts.map((text) => ({ type: "text" as const, text, state: "done" as const }))] });
 const shape = (ms: UIMessage[], fold?: boolean) =>
-  rowsOf(ms, { fold }).map((r) => (r.type === "chatter" ? `chatter(${r.with.join(",")}; ${r.exchanges}; ${r.messages.map((m) => m.id).join(" ")}; ${r.glimpse})` : `${r.type}:${r.message.id}`));
+  rowsOf(ms, { fold }).map((r) => (r.type === "chatter" ? `chatter(${chatterLabels({ node: "/me", agent: "me" }, r.with).with.join(",")}; ${r.exchanges}; ${r.messages.map((m) => m.id).join(" ")}; ${r.glimpse})` : `${r.type}:${r.message.id}`));
 
 test("where a message comes from", () => {
   assert.deepEqual(fromOf(user("1", "hi")), { kind: "person" });
@@ -116,4 +116,14 @@ test("claude-code: the summary a session goes on from is marked as one, not as t
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("agents talking are labeled so they can be told apart: by name, else by their node's own name, else in full", () => {
+  // The usual case: names differ.
+  assert.deepEqual(chatterLabels({ node: "/", agent: "main" }, ["/ideas#ideas", "sub-agent"]), { me: "main", with: ["ideas", "sub-agent"] });
+  // Two sessions of a studio, both "main": their ids (an id in any script as written).
+  assert.deepEqual(chatterLabels({ node: "/demo/fix-tests", agent: "main" }, ["/demo/add-titlecase#main"]), { me: "fix-tests", with: ["add-titlecase"] });
+  assert.deepEqual(chatterLabels({ node: "/demo/fix-tests", agent: "main" }, ["/demo/+4fee+767b+5f55#main", "/ideas#ideas"]), { me: "fix-tests", with: ["修登录", "ideas"] });
+  // The same id in two workspaces: the whole address.
+  assert.deepEqual(chatterLabels({ node: "/demo/fix", agent: "main" }, ["/lisbon/fix#main"]), { me: "/demo/fix#main", with: ["/lisbon/fix#main"] });
 });

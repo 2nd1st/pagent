@@ -4,14 +4,17 @@
 //
 // The rail is where every agent of the app is seen at a glance, on every page: what it is doing now or the question it
 // waits on, the last thing it said, when it last talked. A page does not need its own overview of the app's agents.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { quietNote, type AgentStatus } from "@pagent/bridge";
 import { labelOf, sayIn, t } from "@pagent/bridge/i18n";
 import { api, clientId, onHostEvent, qs } from "./host.ts";
 import { go } from "./nav.ts";
 
-/** lang: the language the page says it is in (metadata.lang); the home page's is the app's. */
-export type Page = { path: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string };
+/**
+ * lang: the language the page says it is in (metadata.lang); the home page's is the app's. An instance of a dynamic
+ * page: instanceOf (its code's path), pageTitle (the title that page gives them all).
+ */
+export type Page = { path: string; title: string; titled: boolean; agents: string[]; order?: number; lang?: string; instanceOf?: string; pageTitle?: string };
 
 /** The app's pages (title, agents), reloaded when code changes (a page added, a title changed). */
 export function usePages(): Page[] | null {
@@ -181,11 +184,18 @@ function useSeen(current: string, pages: Page[], statuses: Map<string, Glance>):
   return seen;
 }
 
-type Row = { label: string; depth: number } | { page: Page; depth: number };
+/**
+ * A dynamic page's instances under one parent (the sessions of a workspace), as one entry: its title, and inside, each
+ * instance (with what is under it).
+ */
+type Group = { key: string; title: string; pages: Page[]; rows: Row[] };
+type Row = { label: string; depth: number } | { page: Page; depth: number } | { group: Group; depth: number };
 
 /**
  * The pages below the home, as a tree: siblings by their own `metadata.order` (lower first), then by title. Folders on
- * the way to a page that are not pages themselves (/cards for /cards/todo) show as labels.
+ * the way to a page that are not pages themselves (/cards for /cards/todo) show as labels. Several instances of one
+ * dynamic page side by side are one entry (a group) that opens to list them: an app that is a list of sessions or
+ * documents has its own way through them, and the rail does not repeat it.
  */
 function railRows(pages: Page[]): Row[] {
   type T = { seg: string; page?: Page; kids: Map<string, T> };
@@ -200,17 +210,49 @@ function railRows(pages: Page[]): Row[] {
     at.page = p;
   }
   const name = (t: T) => (t.page?.title ?? t.seg.replace(/[-_]+/g, " ")).toLowerCase();
-  const rows: Row[] = [];
-  const walk = (t: T, depth: number) => {
-    const kids = [...t.kids.values()].sort((a, b) => (a.page?.order ?? Infinity) - (b.page?.order ?? Infinity) || name(a).localeCompare(name(b)));
+  const byOrder = (a: T, b: T) => (a.page?.order ?? Infinity) - (b.page?.order ?? Infinity) || name(a).localeCompare(name(b));
+  const walk = (t: T, depth: number, rows: Row[], at: string) => {
+    const kids = [...t.kids.values()];
+    const counts = new Map<string, number>();
+    for (const k of kids) if (k.page?.instanceOf) counts.set(k.page.instanceOf, (counts.get(k.page.instanceOf) ?? 0) + 1);
+    // One entry per dynamic page with several instances here, sorted among its siblings by its title.
+    type Entry = { t: T } | { of: string; title: string; members: T[] };
+    const entries: Entry[] = [];
+    const groups = new Map<string, Extract<Entry, { of: string }>>();
     for (const k of kids) {
-      rows.push(k.page ? { page: k.page, depth } : { label: k.seg.replace(/[-_]+/g, " "), depth });
-      walk(k, depth + 1);
+      const of = k.page?.instanceOf;
+      if (!of || (counts.get(of) ?? 0) < 2) entries.push({ t: k });
+      else if (groups.has(of)) groups.get(of)!.members.push(k);
+      else {
+        const g = { of, title: k.page!.pageTitle ?? of.slice(of.lastIndexOf("/") + 1).replace(/^\[(\.\.\.)?|\]$/g, ""), members: [k] };
+        groups.set(of, g);
+        entries.push(g);
+      }
+    }
+    const label = (e: Entry) => ("t" in e ? name(e.t) : e.title.toLowerCase());
+    const order = (e: Entry) => ("t" in e ? (e.t.page?.order ?? Infinity) : Infinity);
+    entries.sort((a, b) => order(a) - order(b) || label(a).localeCompare(label(b)));
+    for (const e of entries) {
+      if ("t" in e) {
+        rows.push(e.t.page ? { page: e.t.page, depth } : { label: e.t.seg.replace(/[-_]+/g, " "), depth });
+        walk(e.t, depth + 1, rows, `${at}/${e.t.seg}`);
+        continue;
+      }
+      const inner: Row[] = [];
+      for (const m of e.members.sort(byOrder)) {
+        inner.push({ page: m.page!, depth: depth + 1 });
+        walk(m, depth + 2, inner, `${at}/${m.seg}`);
+      }
+      rows.push({ group: { key: `${at || "/"}:${e.of}`, title: e.title, pages: e.members.map((m) => m.page!), rows: inner }, depth });
     }
   };
-  walk(top, 0);
+  const rows: Row[] = [];
+  walk(top, 0, rows, "");
   return rows;
 }
+
+/** Every page in a group, the ones under its instances too. */
+const pagesIn = (g: Group): Page[] => g.rows.flatMap((r) => ("page" in r ? [r.page] : "group" in r ? pagesIn(r.group) : []));
 
 /** A reply that ends asking something: it is waiting on the user too, just not through a card. */
 const asks = (text: string) => /[?？]\s*$/.test(text);
@@ -224,11 +266,17 @@ export function Rail({ pages, statuses, current, onPick }: { pages: Page[]; stat
   const rows = useMemo(() => railRows(pages), [pages]);
   const now = useNow();
   const seen = useSeen(current, pages, statuses);
+  // Groups opened (in this view). The one the page in front is in stays closed (it is marked as where you are): its
+  // page is most likely the app's own list of them (a sidebar of sessions), which the rail would only repeat.
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  const unreadOf = (p: Page, g: Glance | null) => {
+    const saidAt = Date.parse(g?.said?.at ?? "") || 0;
+    return p.path !== current && !!saidAt && saidAt > (seen[p.path] ?? Infinity);
+  };
   const item = (p: Page, depth: number, className = "") => {
     const g = pageGlance(p, statuses);
     const here = p.path === current;
-    const saidAt = Date.parse(g?.said?.at ?? "") || 0;
-    const unread = !here && !!saidAt && saidAt > (seen[p.path] ?? Infinity);
+    const unread = unreadOf(p, g);
     const now1 = g?.state === "waiting" ? g.question ?? t("status.waiting") : g?.state === "working" ? g.doing ?? t("status.working") : g?.state === "offline" ? t("status.offline") : null;
     const when = ago(g?.lastAt ?? g?.said?.at, now);
     return (
@@ -247,12 +295,40 @@ export function Rail({ pages, statuses, current, onPick }: { pages: Page[]; stat
       </a>
     );
   };
+  // A group: its title and how many, the most pressing state of any of them (how many wait, or work), and inside them.
+  const group = (g: Group, depth: number) => {
+    const all = pagesIn(g);
+    const glances = all.map((p) => pageGlance(p, statuses));
+    const waiting = glances.filter((x) => x?.state === "waiting").length;
+    const working = glances.filter((x) => x?.state === "working").length;
+    const lead: Glance | null = glances.some(Boolean) ? { state: waiting ? "waiting" : working ? "working" : "idle", doing: null, question: null, said: null, lastAt: null } : null;
+    const unread = all.some((p, i) => unreadOf(p, glances[i]));
+    const shown = open.has(g.key);
+    const here = all.some((p) => p.path === current);
+    const note = waiting ? t("rail.waiting", { n: waiting }) : working ? t("rail.working", { n: working }) : null;
+    return (
+      <div key={g.key} className="pagent-railgroup">
+        <button className="pagent-railitem" aria-expanded={shown} aria-current={here && !shown ? "page" : undefined} data-unread={unread || undefined} style={{ paddingLeft: 8 + depth * 14 }} onClick={() => setOpen((o) => (o.has(g.key) ? (o.delete(g.key), new Set(o)) : new Set([...o, g.key])))}>
+          <span className="pagent-railrow">
+            <Dot glance={lead} unread={unread} />
+            <span className="pagent-railtitle">{g.title}</span>
+            <span className="pagent-railtime">{g.pages.length}</span>
+            <svg className="pagent-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 4l4 4-4 4" />
+            </svg>
+          </span>
+          {note && <span className="pagent-railnote" data-state={waiting ? "waiting" : "working"}>{note}</span>}
+        </button>
+        {shown && rowsOf(g.rows)}
+      </div>
+    );
+  };
+  const rowsOf = (rs: Row[]): ReactNode[] =>
+    rs.map((r) => ("page" in r ? item(r.page, r.depth) : "group" in r ? group(r.group, r.depth) : <div key={"label:" + r.label + r.depth} className="pagent-raillabel" style={{ paddingLeft: 23 + r.depth * 14 }}>{r.label}</div>));
   return (
     <nav className="pagent-rail" aria-label={t("app.pages")} data-pagent-chrome>
       {root && item(root, 0, "pagent-railhome")}
-      <div className="pagent-raillist">
-        {rows.map((r) => ("page" in r ? item(r.page, r.depth) : <div key={"label:" + r.label + r.depth} className="pagent-raillabel" style={{ paddingLeft: 23 + r.depth * 14 }}>{r.label}</div>))}
-      </div>
+      <div className="pagent-raillist">{rowsOf(rows)}</div>
     </nav>
   );
 }
