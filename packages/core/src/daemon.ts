@@ -230,9 +230,10 @@ function appBack(id: string, deadline: number): Promise<boolean> {
 }
 
 async function proxy(req: IncomingMessage, res: ServerResponse) {
-  // Same rule as the app servers: no other site's pages, no rebound domains.
-  const origin = req.headers.origin;
-  if (!LOOPBACK.test(req.headers.host ?? "") || (origin && (origin === "null" || !LOOPBACK.test(new URL(origin).host)))) {
+  // No rebound domains, and no pages at all: agents' harnesses and their `pagent` commands are not browsers, so what
+  // sends an Origin is a page, whether at another port of localhost or one served through here (an app's route). The
+  // app would take the latter for its own, its Host being this proxy's.
+  if (!LOOPBACK.test(req.headers.host ?? "") || req.headers.origin !== undefined) {
     return void res.writeHead(403).end("refused");
   }
   const m = /^\/a\/([0-9a-f]+)(\/.*)$/.exec(req.url ?? "");
