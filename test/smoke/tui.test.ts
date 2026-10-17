@@ -1,6 +1,7 @@
 // An agent whose turns are typed into its TUI (the fake runner with a TUI), when a turn does not just end: the TUI exits
 // under it; someone stops it (the page, `pagent stop`, a person's `pagent stop` in a terminal); what its status says;
-// a permission prompt in it that nobody sees; a message into its turn in progress (interject).
+// a permission prompt in it that nobody sees; a message into its turn in progress (interject); a frame on its
+// terminal that is not JSON.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
@@ -25,6 +26,7 @@ describe("an agent in its TUI", () => {
       "early/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
       "perm/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
       "int/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
+      "bad/page.tsx": page({ bot: { runner: fakeTuiRunner } }),
     });
   });
   after(() => app.close());
@@ -49,6 +51,18 @@ describe("an agent in its TUI", () => {
     await until(async () => (await status("/exit")).terminal.state === "working", "the typed turn");
     assert.equal(await ask("/exit", "!say after the typed turn"), "after the typed turn");
     assert.equal((await status("/exit")).busy, false);
+  });
+
+  test("a frame on its terminal that is not JSON is dropped: the server stays up, and the next frame is typed", async () => {
+    await ask("/bad", "!say up"); // its TUI is open
+    const ws = new WebSocket(`${app.url.replace("http", "ws")}/_pagent/terminal?node=/bad&agent=bot&cols=80&rows=24`);
+    await new Promise((r) => (ws.onmessage = r));
+    ws.send("not json");
+    ws.send("null");
+    ws.send(JSON.stringify({ type: "input", data: "\x1b[200~!say still typed\x1b[201~\r" }));
+    await until(async () => (await history("/bad")).includes("assistant: still typed"), "the typed turn");
+    ws.close();
+    assert.equal(await ask("/bad", "!say and asked"), "and asked");
   });
 
   test("status: a message waiting for a turn its TUI did not start says so, not \"starting\", and since when it is quiet", async () => {

@@ -431,10 +431,16 @@ export function startServer(opts: ServerOptions) {
         const io = attach(term, (data) => ws.readyState === ws.OPEN && (data === null ? ws.close(4000, "restarted") : ws.send(data)));
         io.resize(size.cols, size.rows);
         ws.on("message", (raw) => {
-          const m = JSON.parse(String(raw)) as { type: "input" | "resize" | "kill"; data?: string; cols?: number; rows?: number };
-          if (m.type === "input") io.input(m.data ?? "");
-          else if (m.type === "resize") io.resize(m.cols ?? 0, m.rows ?? 0);
-          else if (m.type === "kill") io.kill();
+          // A frame that is not JSON (or not an object) is dropped: thrown here, it would take the server down.
+          let m: { type?: "input" | "resize" | "kill"; data?: string; cols?: number; rows?: number } | null;
+          try {
+            m = JSON.parse(String(raw));
+          } catch {
+            return;
+          }
+          if (m?.type === "input") io.input(m.data ?? "");
+          else if (m?.type === "resize") io.resize(m.cols ?? 0, m.rows ?? 0);
+          else if (m?.type === "kill") io.kill();
         });
         ws.on("close", io.detach);
       } catch (e) {
