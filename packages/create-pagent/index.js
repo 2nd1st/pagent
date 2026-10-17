@@ -25,7 +25,9 @@ const HOME = {
   en: { empty: "Ask me anything, or tell me what you would like this app to do for you.", unpin: "Unpin" },
   "zh-CN": { empty: "想问什么都可以，或者告诉我你想让这个应用帮你做什么。", unpin: "取消固定" },
 };
-const words = HOME[lang] ?? HOME.en;
+// Its words follow the tag as the engine's do (bridge: i18n.ts, langOf): in any case, and zh, zh-Hans or zh-SG as zh-CN.
+const ALIASES = { "zh-cn": "zh-CN", zh: "zh-CN", "zh-hans": "zh-CN", "zh-hans-cn": "zh-CN", "zh-sg": "zh-CN" };
+const words = HOME[ALIASES[(lang ?? "").toLowerCase()]] ?? HOME.en;
 if (existsSync(dir) && readdirSync(dir).length) {
   console.error(`${dir} exists and is not empty`);
   process.exit(1);
