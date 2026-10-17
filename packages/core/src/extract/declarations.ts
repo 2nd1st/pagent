@@ -1,5 +1,6 @@
 // A node's declarations (export const agents, tools, triggers, config, metadata), its imports of other
 // nodes and the edits the compiler applies, read from its code without running it; and the manifest of several files.
+import { instanceDir, MAX_FOLDER_NAME } from "../tree.ts";
 import { lineOf, parseModule, type Node } from "./ast.ts";
 import { cronFields, everyMs } from "./schedule.ts";
 
@@ -390,15 +391,25 @@ export function analyze(
     }
   });
 
-  // Identity rule: a component used more than once under the same parent needs explicit keys.
-  const keys = new Map<string, number>();
+  // Identity rule: each instance is a folder of its own, .mounts/<instanceDir(key)> under this node, whatever node it
+  // is an instance of. So a component used more than once needs explicit keys, two components never share a key, and
+  // neither do keys that differ only in case (one folder on a disk that ignores case, as macOS's does).
+  const byFolder = new Map<string, (UsageDecl & { key: string })[]>();
   for (const u of result.usages) {
     if (u.key === null || u.shared) continue;
-    const id = `${u.component}:${u.key}`;
-    keys.set(id, (keys.get(id) ?? 0) + 1);
+    const folder = instanceDir(u.key).toLowerCase();
+    if (folder.length > MAX_FOLDER_NAME) {
+      result.errors.push(`${file}: <${u.component} key=${JSON.stringify(u.key.length > 40 ? u.key.slice(0, 40) + "…" : u.key)}>: the key is too long for its instance's folder name (${folder.length} characters; at most ${MAX_FOLDER_NAME}, and each character other than letters, digits, _ and - takes 5); give it a shorter key`);
+    }
+    byFolder.set(folder, [...(byFolder.get(folder) ?? []), { ...u, key: u.key }]);
   }
-  for (const [id, count] of keys) {
-    if (count > 1) result.errors.push(`${file}: <${id.split(":")[0]}> is rendered ${count} times with the same key "${id.split(":")[1]}"; give each a distinct key`);
+  for (const us of byFolder.values()) {
+    if (us.length < 2) continue;
+    const named = [...new Set(us.map((u) => `<${u.component} key=${JSON.stringify(u.key)}>`))];
+    const folders = [...new Set(us.map((u) => `.mounts/${instanceDir(u.key)}`))];
+    if (named.length === 1) result.errors.push(`${file}: <${us[0].component}> is rendered ${us.length} times with the same key ${JSON.stringify(us[0].key)}; give each a distinct key`);
+    else if (folders.length === 1) result.errors.push(`${file}: ${named.join(" and ")} would be one instance (one folder, ${folders[0]}); give each a distinct key`);
+    else result.errors.push(`${file}: ${named.join(" and ")} would be one instance on a disk that ignores case, as macOS's does (${folders.join(", ")}); give each a key that differs in more than case`);
   }
   return result;
 }

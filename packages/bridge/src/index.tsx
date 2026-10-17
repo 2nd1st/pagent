@@ -5,6 +5,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import type { UIMessage } from "ai";
 import { DataConflict, type AgentEvent, type AgentRef, type HostApi } from "./contract.ts";
+import { instanceDir } from "./instance.ts";
 
 export { DataConflict, type Activity, type AgentEvent, type AgentRef, type AgentStatus, type ChatOrigin, type DataRead, type DataWrite, type HostApi, type Question, type RateLimit, type SessionUsage, type SubagentInfo } from "./contract.ts";
 export type { Agents, AgentSpec, Config, McpServer, Tools, Triggers } from "./declarations.ts";
@@ -284,10 +285,9 @@ export function useNode(): { path: string } {
 
 // ---------------------------------------------------------------- imported nodes
 
-const instanceKey = (key: unknown) => String(key).replace(/[^A-Za-z0-9_-]/g, "_") || "_";
-
 /**
- * `import Mailbox from "~/component/mailbox"` compiles to this. Each rendered instance is a fork, unless the node
+ * `import Mailbox from "~/component/mailbox"` compiles to this. Each rendered instance is a fork (in the parent's
+ * .mounts/, a folder named after its key: instance.ts), unless the node
  * declares itself shared (`export const config = { shared: true }`) or the instance says `shared`: then it is the
  * node itself. The source is a node of this app ("~/…"), or another server's MCP App ("mcp://…", in an iframe).
  */
@@ -302,7 +302,7 @@ export function nodeComponent(source: string, opts: { shared?: boolean } = {}): 
 
     if (source.startsWith("mcp://")) return <host.McpApp source={source} args={props} />;
     const isShared = !!(shared || opts.shared);
-    const path = isShared ? source.slice(1) : `${scope.path === "/" ? "" : scope.path}/.mounts/${instanceKey(__key)}`;
+    const path = isShared ? source.slice(1) : `${scope.path === "/" ? "" : scope.path}/.mounts/${instanceDir(__key)}`;
     return <host.NodeFrame path={path} from={isShared ? undefined : source} props={props} handlers={handlers} />;
   };
   NodeInstance.displayName = `Node(${source})`;
