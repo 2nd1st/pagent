@@ -34,9 +34,12 @@ export const usages = new Map<string, unknown>();
 export const active = new Map<string, Run>(); // agent → run executing now
 const chains = new Map<string, AgentRef[]>(); // agent → its run in progress's chain: it, then who waits on it (tell's wait), and so on
 
-/** Tell an agent something the app owes it (the outcome of a command that waited: an answer, a reply): a message to it. */
-export function notify(ctx: Ctx, ref: AgentRef, text: string) {
-  void startRun(ctx, { ...ref, message: text, caller: { kind: "pagent" } }).catch((e) => console.warn(`could not tell ${keyOf(ref)}: ${(e as Error).message}\n${text}`));
+/**
+ * Tell an agent something the app owes it (the outcome of a command that waited: an answer, a reply): a message to it.
+ * unattended: the command was part of a run nobody attends, so this is too.
+ */
+export function notify(ctx: Ctx, ref: AgentRef, text: string, unattended = false) {
+  void startRun(ctx, { ...ref, message: text, caller: { kind: "pagent" }, ...(unattended ? { unattended } : {}) }).catch((e) => console.warn(`could not tell ${keyOf(ref)}: ${(e as Error).message}\n${text}`));
 }
 
 /** The message as views show it: the words as given, and who they are from (none for a person's own). */
@@ -49,8 +52,8 @@ export const userMessage = (text: string, caller?: Caller): UIMessage => ({
 
 export type Push = (c: UIMessageChunk | null) => void;
 
-export function newRun(ref: AgentRef, user: UIMessage, caller: Caller): { run: Run; push: Push } {
-  const run: Run = { id: randomUUID(), ref, caller, user, chunks: [], subscribers: new Set(), done: false, result: Promise.resolve("") };
+export function newRun(ref: AgentRef, user: UIMessage, caller: Caller, unattended = caller.kind === "trigger"): { run: Run; push: Push } {
+  const run: Run = { id: randomUUID(), ref, caller, unattended, user, chunks: [], subscribers: new Set(), done: false, result: Promise.resolve("") };
   const push = (c: UIMessageChunk | null) => {
     if (c) run.chunks.push(c), (run.lastAt = Date.now());
     for (const s of run.subscribers) s(c);
@@ -84,7 +87,9 @@ function runEnded(ctx: Ctx, run: Run, push: Push, text: string, how: RunFor) {
   }
   broadcast({ type: "agent", node: ref.node, agent: ref.agent, event: { type: "run-end", runId: run.id } });
   if (!run.taken) run.stopped ? run.letter?.taken() : run.letter?.untaken(); // stopped before it began: not tried again
-  if (replyTo) void ask(ctx, { ...replyTo, message: `${resultOf(ref, run.id)}\n${text || "(no reply)"}`, caller: { kind: "agent", ...ref } }).catch((e) => console.warn(`could not report back to ${keyOf(replyTo)}: ${(e as Error).message}`));
+  // An unattended run's result carries on what the trigger started: nobody is there for that run either.
+  const alone = run.unattended ? { unattended: true } : {};
+  if (replyTo) void ask(ctx, { ...replyTo, message: `${resultOf(ref, run.id)}\n${text || "(no reply)"}`, caller: { kind: "agent", ...ref }, ...alone }).catch((e) => console.warn(`could not report back to ${keyOf(replyTo)}: ${(e as Error).message}`));
   if (replyPost) void postReply(ctx, replyPost, text, run.id).catch((e) => console.warn(`${keyOf(ref)}: could not send the reply to ${replyPost.url}: ${(e as Error).message}`));
 }
 
@@ -209,7 +214,7 @@ export async function startRun(ctx: Ctx, input: AskInput, opts: StartOptions = {
   const [decl, driver] = found;
   // Where it comes from, in the line itself (caller.ts); a person's words in their conversation arrive as they are.
   const message = callerLine(input.caller, input.message);
-  const { run, push } = newRun(ref, input.user ?? userMessage(input.message, input.caller), input.caller);
+  const { run, push } = newRun(ref, input.user ?? userMessage(input.message, input.caller), input.caller, input.unattended);
   run.id = letter.id;
   run.letter = {
     taken: () => drop(ctx.root, letter.id),
@@ -259,10 +264,17 @@ export async function whenIdle(ref: AgentRef): Promise<void> {
   }
 }
 
-/** A run started by a trigger: nobody is there to approve or answer. */
-export const unattended = (ref: AgentRef) => activeRun(ref)?.caller.kind === "trigger";
+/** The agent's run in progress is unattended: nobody is there to approve or answer. */
+export const unattended = (ref: AgentRef) => !!activeRun(ref)?.unattended;
+
+/**
+ * Is a message from this caller unattended? From a trigger, and from an agent in an unattended run: a delegation goes on
+ * as the run it came from (trigger → a → b, through any number of agents), so a person on the way (their chat, a page's
+ * button) makes the rest attended. The agent's run says which it is (via names the code on the way, not the agents).
+ */
+export const unattendedFrom = (c: Caller): boolean => c.kind === "trigger" || (c.kind === "agent" && unattended(c));
 export const NOBODY =
-  "Nobody can answer: this run was started by a trigger and is unattended. Do what you can with your file tools, " +
+  "Nobody can answer: this run comes from a trigger (or an agent's run that one started) and is unattended. Do what you can with your file tools, " +
   "and leave a short note in the app's data for the user about anything that needs them.";
 
 /** Ask the user, unless the run is unattended. Then the answer is that nobody is there. */

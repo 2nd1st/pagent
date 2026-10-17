@@ -10,7 +10,7 @@ import { extname, join, normalize, sep } from "node:path";
 import { engine, hasShell } from "./engine.ts";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { WebSocketServer } from "ws";
-import { activeRun, agentOf, agentStatus, ask, askOrDecline, saveAttachments, uploadFile, closeQuietAgents, conflictOf, follow, history, interactiveCommand, lastWords, recoverAgents, redeliver, residency, sessionHandle, startRun, stopTurn, turnsQueued, untilRun, usageOf, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
+import { activeRun, agentOf, agentStatus, ask, askOrDecline, saveAttachments, uploadFile, closeQuietAgents, conflictOf, follow, history, interactiveCommand, lastWords, recoverAgents, redeliver, residency, sessionHandle, startRun, stopTurn, turnsQueued, unattended, untilRun, usageOf, whenIdle, type AskInput, type Ctx, type Run } from "./agents.ts";
 import { restoreQuestions, runCommand } from "./commands.ts";
 import { registerApp } from "./daemon-client.ts";
 import { forClient, runAction } from "./actions.ts";
@@ -348,7 +348,7 @@ export function startServer(opts: ServerOptions) {
           const body = (await readBody(req)) as { tool_name?: string; tool_input?: Record<string, unknown> };
           const decide = (behavior: "allow" | "deny", message?: string) =>
             json(res, 200, { hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior, ...(message ? { message } : {}) } } });
-          if (terminalOf(ref)?.viewers.size && activeRun(ref)?.caller.kind !== "trigger") return json(res, 200, {});
+          if (terminalOf(ref)?.viewers.size && !unattended(ref)) return json(res, 200, {});
           const input = body.tool_input ?? {};
           const detail = typeof input.command === "string" ? input.command : typeof input.file_path === "string" ? input.file_path : JSON.stringify(input, null, 2);
           const gone = new AbortController();

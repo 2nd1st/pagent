@@ -30,9 +30,9 @@ async function turn({ ctx, run, push, input, decl, message }: Turn): Promise<str
   const script = runnerScript(decl.runner);
   const base = runnerBase(ctx, ref, decl);
   // The agent's TUI, if it is open (or, for an agent that runs in one, once it is started); otherwise a headless
-  // turn. Another process holding the session stops either; a trigger's run waits for it instead (nobody is there to
-  // close that process or fork the session). A TUI that exits while the message waits for it to be quiet takes
-  // nothing with it: the message goes to the one started next (on the same session).
+  // turn. Another process holding the session stops either; an unattended run (what a trigger started) waits for it
+  // instead (nobody is there to close that process or fork the session). A TUI that exits while the message waits for
+  // it to be quiet takes nothing with it: the message goes to the one started next (on the same session).
   let holder: Holder | undefined;
   for (const since = Date.now(); ; holder = undefined) {
     for (let tries = 0; tries < 2; tries++) {
@@ -46,7 +46,7 @@ async function turn({ ctx, run, push, input, decl, message }: Turn): Promise<str
     }
     if (!(holder ??= (await conflict(ctx, ref))?.holder)) break;
     if (run.stopped) return "";
-    if (run.caller.kind === "trigger" && Date.now() - since < BUSY_MAX) {
+    if (run.unattended && Date.now() - since < BUSY_MAX) {
       await new Promise((r) => setTimeout(r, BUSY_RECHECK));
       continue;
     }
@@ -70,7 +70,7 @@ async function turn({ ctx, run, push, input, decl, message }: Turn): Promise<str
       cwd: base.cwd,
       env,
       stdin: JSON.stringify({ op: "ask", message, ...base, ...agent }),
-      meta: { app: ctx.root, type: "run", ...ref, runId: run.id, caller: input.caller, user: run.user, chain: input.chain, replyTo: input.replyTo, replyPost: input.replyPost },
+      meta: { app: ctx.root, type: "run", ...ref, runId: run.id, caller: input.caller, unattended: run.unattended, user: run.user, chain: input.chain, replyTo: input.replyTo, replyPost: input.replyPost },
     }, turnEvents(procId, onLine, resolve)).then(() => (taken(run), run.stopped && procOp("kill", procId)), reject); // stopped while it started
   });
   return ended(run, push, code, text);
@@ -137,7 +137,7 @@ async function recoverRuns(ctx: Ctx) {
 function recoverRun(ctx: Ctx, p: ProcInfo) {
   const m = p.meta;
   const ref: AgentRef = { node: m.node, agent: m.agent };
-  const { run, push } = newRun(ref, m.user ?? userMessage("(a turn started before this server)"), m.caller ?? { kind: "pagent" });
+  const { run, push } = newRun(ref, m.user ?? userMessage("(a turn started before this server)"), m.caller ?? { kind: "pagent" }, m.unattended);
   run.id = m.runId ?? run.id;
   run.taken = true;
   known.add(run.id);

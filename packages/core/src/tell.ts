@@ -17,7 +17,7 @@
 import { lookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
 import { isIP } from "node:net";
-import { chainOf, inChain, notify, postReply, startRun, type AgentRef, type AskInput, type Ctx } from "./agents.ts";
+import { chainOf, inChain, notify, postReply, startRun, unattendedFrom, type AgentRef, type AskInput, type Ctx } from "./agents.ts";
 import { callerName, isExternal, type Caller } from "./caller.ts";
 import type { Call } from "./calls.ts";
 import { agentArg, seconds, within } from "./commands/common.ts";
@@ -116,7 +116,9 @@ export async function tell(ctx: Ctx, call: Pick<Call, "caller">, to: string, mes
   // Its chain: who waits on it (a sender that waits for the reply, and whoever waits on that one), so a waiting tell
   // back up that chain is refused instead of deadlocking.
   const chain = opts.wait && replyTo ? [target, ...chainOf(replyTo)] : [target];
-  const input: AskInput = { ...target, message, caller, chain, ...(opts.interject ? { interject: true } : {}) };
+  // Unattended as whom the code that tells runs for (call.caller; `from` may have made another agent the sender above).
+  const alone = unattendedFrom(call.caller) ? { unattended: true } : {};
+  const input: AskInput = { ...target, message, caller, chain, ...(opts.interject ? { interject: true } : {}), ...alone };
   const late = { replyTo, replyPost };
   if (!opts.wait) {
     const run = await startRun(ctx, { ...input, ...(replyTo ? { replyTo } : {}), ...(replyPost ? { replyPost } : {}) });
@@ -130,7 +132,7 @@ export async function tell(ctx: Ctx, call: Pick<Call, "caller">, to: string, mes
     if (!run.done) Object.assign(input, late);
     else
       void run.result.then((t) => {
-        if (replyTo) notify(ctx, replyTo, `Reply from ${keyOf(target)} (message ${run.id}):\n${t || "(no reply)"}`);
+        if (replyTo) notify(ctx, replyTo, `Reply from ${keyOf(target)} (message ${run.id}):\n${t || "(no reply)"}`, run.unattended);
         if (replyPost) void postReply(ctx, replyPost, t, run.id).catch((e) => console.warn(`${keyOf(target)}: could not send the reply to ${replyPost.url}: ${(e as Error).message}`));
       });
   }, "");
