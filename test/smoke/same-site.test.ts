@@ -1,7 +1,8 @@
 // What a page sends without asking (an <img>, a link) from another port of this machine: a browser calls that the same
 // site (a site has no port) and sends no Origin, so only Sec-Fetch-Site tells. On the user's own plane it is refused as
 // another site's is (an <img> could fork a node), as the page's fetch is by its Origin; a link to a page still opens
-// it; the app's own pages, a device with the token, local processes and the app's routes are as before.
+// it; the app's own pages, a device with the token, local processes and the app's routes are as before. The daemon's
+// proxy, where agents reach their app, takes no browser's request at all, not even a GET from a page served through it.
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { request } from "node:http";
@@ -56,6 +57,15 @@ describe("GETs from another port of this machine", () => {
     assert.equal(await get(`${app.url}/_pagent/node?path=/.mounts/copy&from=~/thing`, fetched("same-origin")), 200);
     assert.equal(existsSync(join(app.root, ".mounts", "copy")), true);
     assert.equal(await get(`${app.url}/api/hello`, img("same-site")), 200);
+  });
+
+  test("the daemon's proxy takes no browser's GET, not even a same-origin one; a local process's is as before", async () => {
+    for (const headers of [fetched("same-origin"), img("same-site"), link("none"), link("cross-site")]) {
+      assert.equal(await get(`${app.proxy}/_pagent/pages`, headers), 403, JSON.stringify(headers));
+    }
+    assert.equal(await get(`${app.proxy}/_pagent/node?path=/.mounts/viaproxy&from=~/thing`, fetched("same-origin")), 403);
+    assert.equal(existsSync(join(app.root, ".mounts", "viaproxy")), false);
+    assert.equal(await get(`${app.proxy}/_pagent/pages`, { "sec-fetch-mode": "cors" }), 200); // Node's fetch sends this one
   });
 
   test("a device with the token: its own pages are as before, an <img> elsewhere is not", { skip: !lan && "no LAN address" }, async () => {
