@@ -171,6 +171,35 @@ test("claude-code: a live process holds its session in any locale (the registry 
   }
 });
 
+test("claude-code: a long folder's sessions, where Claude Code keeps them (its name cut at 200, then a hash of the path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pagent-long-"));
+  const config = join(dir, "config");
+  const said = (text: string) => JSON.stringify({ type: "assistant", uuid: text, message: { role: "assistant", content: [{ type: "text", text }] } }) + "\n";
+  const last = (cwd: string) => opOf("claude-code", { op: "last", cwd, stateDir: join(dir, "state") }, { CLAUDE_CONFIG_DIR: config })[0];
+  // Folders that do not exist (taken as given); the names are what Claude Code 2.1.302's own function makes of them.
+  const base = "/Users/x/Documents/Projects/my-notes-app/nodes/每周回顾/2026年10月第三周的项目进度与下周计划/a-very-long-folder-name-for-everything-that-happened-this-week-and-what-comes-next-and-more/drafts-and-notes-kept-for-later/";
+  const named = "-Users-x-Documents-Projects-my-notes-app-nodes------2026-10---------------a-very-long-folder-name-for-everything-that-happened-this-week-and-what-comes-next-and-more-drafts-and-notes-kept-for-later---";
+  const folders = {
+    [`${base}草稿`]: named, // 200: as it is
+    [`${base}草稿箱`]: `${named}-17z0dv`, // 201: cut, and told apart by the hash
+    [`${base}草稿箱/更早的版本`]: `${named}-5s2pvt`,
+    "/Users/x/Café": "-Users-x-Caf-", // in NFC, as Claude Code takes a path
+  };
+  try {
+    for (const [cwd, name] of Object.entries(folders)) {
+      mkdirSync(join(config, "projects", name), { recursive: true });
+      writeFileSync(join(config, "projects", name, "s.jsonl"), said(`in ${cwd}`));
+    }
+    for (const [cwd, name] of Object.entries(folders)) {
+      const l = last(cwd);
+      assert.equal(l.text, `in ${cwd}`);
+      assert.equal(l.file, join(config, "projects", name, "s.jsonl"));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("claude-code: the last words and the session's title (its latest ai-title, or the name the user gave it), from the transcript's end", () => {
   const dir = mkdtempSync(join(tmpdir(), "pagent-last-"));
   const cwd = join(dir, "work");
