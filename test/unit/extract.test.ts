@@ -126,6 +126,7 @@ test('"use server": an argument with a default value keeps its type', () => {
     `"use server";\nexport async function list({ q }: { q?: string } = {}) { return q; }\nexport const top = async (x: { n: number } = { n: 3 }) => x.n;\n`,
     "actions.ts",
   );
-  assert.deepEqual(r.about.list, { input: "{ q?: string }", schema: { type: "object", properties: { q: { type: "string" } } } });
+  assert.deepEqual(r.about.list, { input: "{ q?: string }", schema: { type: "object", properties: { q: { type: "string" } } }, optional: true });
   assert.deepEqual(r.about.top.schema, { type: "object", properties: { n: { type: "number" } }, required: ["n"] });
+  assert.equal(r.about.top.optional, true);
 });

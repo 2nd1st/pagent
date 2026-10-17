@@ -27,7 +27,7 @@ function typeText(s: any): string {
   return Array.isArray(s.type) ? s.type.join(" | ") : String(s.type ?? "any");
 }
 
-const argsLine = (a: ActionDecl) => (a.schema ? typeText(a.schema) : a.input ? a.input.replace(/\s+/g, " ") : "none");
+const argsLine = (a: ActionDecl) => (a.schema ? typeText(a.schema) : a.input ? a.input.replace(/\s+/g, " ") : "none") + (a.optional ? " (or none: it has a default)" : "");
 
 async function nodeHelp(ctx: Ctx, node: string): Promise<string> {
   const { manifest } = await ctx.nodes.declarations(node);
@@ -50,7 +50,7 @@ async function nodeHelp(ctx: Ctx, node: string): Promise<string> {
 }
 
 function checkInput(a: ActionDecl, input: unknown) {
-  if (!a.schema) return;
+  if (!a.schema || (input === undefined && a.optional)) return; // left out: its default applies
   const r = (z.fromJSONSchema({ ...a.schema, additionalProperties: true }) as z.ZodType).safeParse(input ?? {});
   if (!r.success) throw new Error(`wrong arguments for ${a.name} (arguments: ${argsLine(a)}):\n${z.prettifyError(r.error)}`);
 }

@@ -10,25 +10,28 @@ export const isServerFile = (code: string) => /^(?:\s|\/\/[^\n]*\n|\/\*[\s\S]*?\
  * the page imports it (and gets a stub that calls the server), agents run it with `pagent run <node> <name>`, triggers
  * run it.
  */
-export function serverExports(code: string, file: string): { names: string[]; errors: string[]; about: Record<string, { input?: string; doc?: string; schema?: Record<string, unknown> }> } {
+export function serverExports(code: string, file: string): { names: string[]; errors: string[]; about: Record<string, { input?: string; doc?: string; schema?: Record<string, unknown>; optional?: true }> } {
   const names: string[] = [];
   const errors: string[] = [];
-  const about: Record<string, { input?: string; doc?: string; schema?: Record<string, unknown> }> = {};
+  const about: Record<string, { input?: string; doc?: string; schema?: Record<string, unknown>; optional?: true }> = {};
   let ast;
   try {
     ast = parseModule(code);
   } catch (e) {
     return { names, errors: [`${file}: ${(e as Error).message}`], about };
   }
-  // For agents: the argument's type as written ({ keys: string[] }) and the doc comment above the export.
+  // For agents: the argument's type as written ({ keys: string[] }), the doc comment above the export, and whether the
+  // argument may be left out (it has a default value).
   const describe = (name: string, fn: Node, stmt: Node) => {
-    const t = paramType(fn.params?.[0]);
+    const p = fn.params?.[0] as Node | undefined;
+    const t = paramType(p);
     const doc = docOf(stmt);
     const schema = t ? typeSchema(t, types) : null;
     about[name] = {
       ...(t ? { input: code.slice(t.start, t.end) } : {}),
       ...(doc ? { doc } : {}),
       ...(schema?.type === "object" ? { schema } : {}),
+      ...(p?.type === "AssignmentPattern" ? { optional: true as const } : {}),
     };
   };
   const types = localTypes(ast.program.body as Node[]);

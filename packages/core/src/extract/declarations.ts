@@ -29,7 +29,7 @@ export type AgentDecl = { name: string; runner: string; [option: string]: unknow
  * An exported function of a "use server" file in the node folder (`file`), and what agents are told about it: its
  * argument's type as written (`input`, and as a JSON Schema) and its doc comment (`doc`).
  */
-export type ActionDecl = { name: string; file: string; input?: string; doc?: string; schema?: Record<string, unknown> };
+export type ActionDecl = { name: string; file: string; input?: string; doc?: string; schema?: Record<string, unknown>; optional?: boolean };
 /**
  * When something happens (cron / every / watch / app), run an action of the node: the action does the rest, waking an
  * agent with tell() when it wants one. watch: a data file of the node ("tasks.json", "*.json"), or of another node by
