@@ -1,6 +1,7 @@
 // Reaching the server from another device (the LAN, a tailnet): `pagent serve <app> --host 0.0.0.0`. The server runs
 // actions and agents, so a device other than this machine needs the app's access token: once, in the URL the server
-// prints (`?token=…`), which sets a cookie and drops it from the address. Requests from this machine need none.
+// prints (`?token=…`), which sets a cookie and drops it from the address. Requests from this machine need none when
+// they call it by a loopback name (or one the user allowed).
 // The token is runtime state (<PAGENT_HOME>/state/<appId>/remote-token), the same across restarts.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
@@ -51,15 +52,18 @@ export type Remote = {
   urls(port: number): string[];
 };
 
-export function remoteAccess(root: string): Remote {
+/** local: a Host this machine's own pages and processes use (localhost, 127.0.0.1, a name in PAGENT_ALLOWED_HOSTS). */
+export function remoteAccess(root: string, local: (host: string) => boolean): Remote {
   const token = readToken(root);
   const same = (t: string) => t.length === token.length && timingSafeEqual(Buffer.from(t), Buffer.from(token));
   return {
     token,
     cookie: `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000`,
     check(req, url) {
+      // This machine by another name (its host name) may be a stranger's page: one whose domain re-resolves to
+      // 127.0.0.1 (DNS rebinding), named with this machine's name as its first label (ownHost). It shows the token too.
       const from = (req.socket.remoteAddress ?? "").replace(/^::ffff:/, "");
-      if (isLoopbackHost(from)) return "ok";
+      if (isLoopbackHost(from) && local(req.headers.host ?? "")) return "ok";
       const cookie = (req.headers.cookie ?? "").split(/;\s*/).find((c) => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
       if (cookie && same(cookie)) return "ok";
       const q = url.searchParams.get("token");

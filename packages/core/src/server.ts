@@ -89,11 +89,15 @@ function streamRun(req: IncomingMessage, res: ServerResponse, run: Run) {
 // it (CSRF), nor a page whose domain re-resolves to 127.0.0.1 (DNS rebinding). Local processes need no Origin;
 // browsers always send one with cross-origin writes and WebSockets, and Sec-Fetch-Site with everything else.
 // PAGENT_ALLOWED_HOSTS adds host names beyond loopback (e.g. a tailnet name); listening beyond loopback (--host) adds
-// this machine's own names and addresses, and asks other devices for the access token (remote.ts).
+// this machine's own names and addresses, and asks for the access token any device that calls by them, this one too
+// (remote.ts).
 const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 const allowedHosts = (env("ALLOWED_HOSTS") ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
 let remoteOpen = false;
-const hostOk = (host: string) => LOOPBACK.test(host) || allowedHosts.includes(host.toLowerCase().replace(/:\d+$/, "")) || (remoteOpen && ownHost(host));
+/** A Host this machine's own pages and processes use: loopback, or a name the user allowed. By it, this machine needs no
+ *  token (remote.ts). */
+const localName = (host: string) => LOOPBACK.test(host) || allowedHosts.includes(host.toLowerCase().replace(/:\d+$/, ""));
+const hostOk = (host: string) => localName(host) || (remoteOpen && ownHost(host));
 
 // The app's public face: its routes and /mcp. Everything else is the user's own.
 const PUBLIC = /^\/(api|mcp)(\/|$)/;
@@ -133,7 +137,7 @@ function refused(req: IncomingMessage, url: URL): string | null {
 export function startServer(opts: ServerOptions) {
   const { root, port } = opts;
   const host = opts.host ?? "127.0.0.1";
-  const remote = isLoopbackHost(host) ? null : remoteAccess(root);
+  const remote = isLoopbackHost(host) ? null : remoteAccess(root, localName);
   remoteOpen = !!remote;
   const nodes = new Nodes(root);
   // Without a daemon (it did not start), agents' tokens hold for this server's life.
