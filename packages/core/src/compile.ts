@@ -212,16 +212,24 @@ function nodePlugin(root: string, node: string, deps?: Deps): Plugin {
       // CSS (the node's own or a package's, e.g. "@xyflow/react/dist/style.css") becomes a module that adds a
       // <style> when it is evaluated, which is before the node renders. @import and url() assets are inlined.
       b.onLoad({ filter: /\.css$/ }, async (a) => ({ contents: await styleModule(a.path), loader: "js" }));
+      // A "use server" file of another extension (.mts, .mjs, …) has no node's actions either; compiled as it is, its
+      // server code would be in the page.
+      b.onLoad({ filter: /\.(mts|cts|mjs|cjs)$/ }, (a) => {
+        if (/[\\/]node_modules[\\/]/.test(a.path) || !isServerFile(readFileSync(a.path, "utf8"))) return undefined;
+        return { errors: [{ text: notInNodeFolder(root, a.path) }] };
+      });
       // Every source file of the node gets the same rewrite (agent names, instance keys).
       b.onLoad({ filter: /\.(tsx|jsx|ts|js)$/ }, (a) => {
         if (/[\\/]node_modules[\\/]/.test(a.path)) return undefined;
         const owner = ownerOf(a.path);
         const code = readFileSync(a.path, "utf8");
         // A "use server" file never reaches the browser: the page gets stubs that call the node's actions. Only its
-        // own node's, by a relative path: another node's is imported as "~/<node>/<file>" (above).
+        // own node's, by a relative path: another node's is imported as "~/<node>/<file>" (above). And only one whose
+        // functions are the node's actions: a .ts or .js file directly in its folder (one in a subfolder is not).
         if (isServerFile(code)) {
           const home = nodeOfFile(root, a.path);
           if (!home || home !== owner) return { errors: [{ text: foreignServerFile(root, a.path, home) }] };
+          if (!/\.(ts|js)$/.test(a.path) || dirname(realpathSync(a.path)) !== realpathSync(nodeDir(root, home))) return { errors: [{ text: notInNodeFolder(root, a.path) }] };
           return { contents: serverStub(owner, serverExports(code, a.path).names, node), loader: "js" };
         }
         if (!owner) return undefined;

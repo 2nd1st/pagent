@@ -26,6 +26,12 @@ before(() => {
     "tasks/page.tsx": NODE,
     "lib/shared.ts": SERVER,
     "a/page.tsx": NODE,
+    "b/page.tsx": NODE,
+    "b/actions.ts": SERVER,
+    "b/lib/db.ts": SERVER,
+    "b/form.tsx": SERVER,
+    "b/db.mts": SERVER,
+    "b/db.mjs": `"use server";\nexport async function add(x) { return x.n + 1; }\n`,
   };
   for (const [rel, code] of Object.entries(files)) (mkdirSync(dirname(join(root, rel)), { recursive: true }), writeFileSync(join(root, rel), code));
 });
@@ -58,6 +64,21 @@ test("a \"use server\" file of another node by a relative path: its address, whe
   const sub = await pageImporting("../lib/shared");
   assert.match(sub, /lib\/shared\.ts is not directly in a node's folder/);
   assert.doesNotMatch(sub, /"~\/shared"/);
+});
+
+test("a page's own node's \"use server\" file by a relative path: directly in its folder, .ts or .js; else an error", async () => {
+  const importing = async (spec: string) => {
+    writeFileSync(join(root, "b/page.tsx"), `import { add } from ${JSON.stringify(spec)};\nexport default function B() { return <button onClick={() => add({ n: 1 })} />; }\n`);
+    return (await compileFile(root, "/b", "page")).errors.join("\n");
+  };
+  assert.equal(await importing("./actions"), "");
+  // Its functions are no actions of /b (a node's are the files directly in its folder): the page's calls would fail.
+  assert.match(await importing("./lib/db"), /b\/lib\/db\.ts is not directly in a node's folder/);
+  assert.match(await importing("./form"), /b\/form\.tsx: a "use server" file is \.ts or \.js/);
+  // Nor .mts, .mjs: compiled as they are, they would have put the server code in the page.
+  assert.match(await importing("./db.mts"), /b\/db\.mts: a "use server" file is \.ts or \.js/);
+  assert.match(await importing("./db.mjs"), /b\/db\.mjs: a "use server" file is \.ts or \.js/);
+  writeFileSync(join(root, "b/page.tsx"), NODE);
 });
 
 test("server code: the same addresses, the same errors", async () => {
