@@ -232,8 +232,10 @@ function appBack(id: string, deadline: number): Promise<boolean> {
 async function proxy(req: IncomingMessage, res: ServerResponse) {
   // No rebound domains, and no pages at all: agents' harnesses and their `pagent` commands are not browsers, so what
   // sends an Origin is a page, whether at another port of localhost or one served through here (an app's route). The
-  // app would take the latter for its own, its Host being this proxy's.
-  if (!LOOPBACK.test(req.headers.host ?? "") || req.headers.origin !== undefined) {
+  // app would take the latter for its own, its Host being this proxy's. Nor a page's request without one (an <img>, a
+  // link, a page served through here reading another app's data with a GET): a browser marks each with Sec-Fetch-Site,
+  // which Node's fetch and the harnesses do not send.
+  if (!LOOPBACK.test(req.headers.host ?? "") || req.headers.origin !== undefined || req.headers["sec-fetch-site"] !== undefined) {
     return void res.writeHead(403).end("refused");
   }
   const m = /^\/a\/([0-9a-f]+)(\/.*)$/.exec(req.url ?? "");
