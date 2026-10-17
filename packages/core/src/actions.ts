@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 import { build, type Plugin } from "esbuild";
 import { via, type Caller } from "./caller.ts";
 import { withCall } from "./calls.ts";
-import { foreignServerFile, nodeOfFile, serverModule } from "./compile.ts";
+import { foreignServerFile, nodeOfFile, notServerModule, serverModule } from "./compile.ts";
 import { engine } from "./engine.ts";
 import { isServerFile } from "./extract.ts";
 import type { Nodes } from "./nodes.ts";
@@ -141,7 +141,7 @@ function otherNodes(root: string, own: string | null, stubbed: Set<string>): Plu
     setup(b) {
       b.onResolve({ filter: /^~\// }, (a) => {
         const m = serverModule(root, a.path);
-        if (!m) return { errors: [{ text: `"${a.path}": server code imports another node's server functions by the address of its "use server" file ("~/<node>/<file>"), and this is not one` }] };
+        if (!m) return { errors: [{ text: `server code imports another node's server functions by the address of its "use server" file ("~/<node>/<file>"): ${notServerModule(root, a.path)}` }] };
         stubbed.add(m.file);
         return { path: a.path, namespace: "pagent-remote", pluginData: m };
       });
