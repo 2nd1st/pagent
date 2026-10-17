@@ -410,6 +410,9 @@ export function startServer(opts: ServerOptions) {
     const ref = { node: normPath(url.searchParams.get("node") ?? "/"), agent: url.searchParams.get("agent") ?? "" };
     const size = { cols: Number(url.searchParams.get("cols")) || 100, rows: Number(url.searchParams.get("rows")) || 30 };
     wss.handleUpgrade(req, socket, head, async (ws) => {
+      // A frame ws cannot take (a text frame that is not UTF-8, say) is an error, and ws closes the connection itself;
+      // unheard, the error would take the server down.
+      ws.on("error", () => {});
       try {
         await ready;
         // One process per session: the app's own runs finish first, and another process holding the session is

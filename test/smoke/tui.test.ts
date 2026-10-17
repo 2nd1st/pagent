@@ -1,9 +1,11 @@
 // An agent whose turns are typed into its TUI (the fake runner with a TUI), when a turn does not just end: the TUI exits
 // under it; someone stops it (the page, `pagent stop`, a person's `pagent stop` in a terminal); what its status says;
 // a permission prompt in it that nobody sees; a message into its turn in progress (interject); a frame on its
-// terminal that is not JSON.
+// terminal that is not JSON, or not UTF-8.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fakeTuiRunner, lines, repo, testApp, until, type TestApp } from "../lib/app.ts";
@@ -63,6 +65,21 @@ describe("an agent in its TUI", () => {
     await until(async () => (await history("/bad")).includes("assistant: still typed"), "the typed turn");
     ws.close();
     assert.equal(await ask("/bad", "!say and asked"), "and asked");
+  });
+
+  test("a text frame on its terminal that is not UTF-8 closes that connection, and the server stays up", async () => {
+    await ask("/bad", "!say up"); // its TUI is open
+    // By hand: a WebSocket client would not send it. The handshake, then one masked text frame, the byte 0xff.
+    const host = new URL(app.url).host;
+    const socket = connect(Number(new URL(app.url).port), "127.0.0.1");
+    socket.write(`GET /_pagent/terminal?node=/bad&agent=bot&cols=80&rows=24 HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n\r\n`);
+    const answer = String(await new Promise((r) => socket.once("data", r)));
+    assert.match(answer, /^HTTP\/1\.1 101/);
+    const mask = randomBytes(4);
+    const closed = new Promise((r) => socket.once("close", r));
+    socket.write(Buffer.from([0x81, 0x81, ...mask, 0xff ^ mask[0]]));
+    await closed;
+    assert.equal(await ask("/bad", "!say still up"), "still up");
   });
 
   test("status: a message waiting for a turn its TUI did not start says so, not \"starting\", and since when it is quiet", async () => {
