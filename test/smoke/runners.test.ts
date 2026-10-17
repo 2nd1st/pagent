@@ -56,6 +56,10 @@ describe("runners say what they do", () => {
     assert.equal(await ask("/tui", "!say and again"), "and again"); // the TUI that is open now
   });
 
+  test("a runner is told the app's folder (where the app's own harness settings are)", async () => {
+    assert.equal(realpathSync(await ask("/quiet", "!root")), realpathSync(app.root));
+  });
+
   test("tui: false, or a runner that says nothing: headless turns, no terminal", async () => {
     assert.equal(await ask("/plain", "!say headless"), "headless");
     assert.equal((await status("/plain")).terminal.open, false);
@@ -226,8 +230,8 @@ describe("claude-code: what the app's root forbids holds for every agent of the 
   // Claude Code reads .claude/settings.json only where it starts, and an agent starts in its node's folder.
   const root = realpathSync(mkdtempSync(join(tmpdir(), "pagent-deny-")));
   const node = join(root, "notes", "today");
-  const settingsOf = (cwd: string, env: Record<string, string> = {}) => {
-    const [c] = opOf("claude-code", { op: "interactive", cwd, stateDir: join(root, ".state") }, { CLAUDE_CONFIG_DIR: join(root, "config"), ...env });
+  const settingsOf = (cwd: string, env: Record<string, string> = {}, input: Record<string, unknown> = {}) => {
+    const [c] = opOf("claude-code", { op: "interactive", cwd, stateDir: join(root, ".state"), ...input }, { CLAUDE_CONFIG_DIR: join(root, "config"), ...env });
     return JSON.parse(c.args[c.args.indexOf("--settings") + 1]).permissions;
   };
   before(() => {
@@ -268,6 +272,22 @@ describe("claude-code: what the app's root forbids holds for every agent of the 
 
   test("a home folder under git is no app: its .claude is the user's own", () => {
     assert.equal(settingsOf(node, { HOME: root }).deny, undefined);
+  });
+
+  test("the app's folder as the core says it: not the root of another repository the agent works in, or of one the app is inside", () => {
+    // An agent whose cwd is in another repository (an adopted session): the app's rules, not that repository's.
+    const other = join(root, "notes", "elsewhere");
+    mkdirSync(join(other, ".git"), { recursive: true });
+    mkdirSync(join(other, ".claude"));
+    writeFileSync(join(other, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Bash(rm:*)"] } }));
+    mkdirSync(join(other, "src"));
+    const p = settingsOf(join(other, "src"), {}, { appRoot: root });
+    assert.ok(p.deny.includes(`Read(/${root}/secrets/**)`) && !p.deny.includes("Bash(rm:*)"));
+    // An app inside a bigger repository: its own root, which is not where .git is.
+    const app = join(root, "notes");
+    mkdirSync(join(app, ".claude"));
+    writeFileSync(join(app, ".claude", "settings.json"), JSON.stringify({ permissions: { deny: ["Read(/drafts/**)"] } }));
+    assert.deepEqual(settingsOf(node, {}, { appRoot: app }).deny, [`Read(/${app}/drafts/**)`]);
   });
 });
 

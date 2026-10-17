@@ -3,7 +3,7 @@
 // only remembers which session belongs to the agent (stateDir/session.json) and resumes it.
 //
 // Contract: one JSON object on stdin, JSONL on stdout.
-//   { op: "ask", message, cwd, stateDir, env, agentSocket, permissionUrl, pluginDirs, skills?, mcps?, systemPrompt, options }
+//   { op: "ask", message, cwd, stateDir, env, agentSocket, permissionUrl, pluginDirs, skills?, mcps?, systemPrompt, options, appRoot? }
 //     → AI SDK UIMessageChunk lines; metadata as transient data chunks (data-session, data-result)
 //   { op: "history", cwd, stateDir } → {type:"history", messages: UIMessage[], file, watch}: watch, the sub-agents' transcripts
 //     it read too (lib/claude-subagents.ts; a sub-agent's call is followed by its data-subagent parts, lib/subagents.ts)
@@ -50,6 +50,7 @@ type Input = {
   mcps?: Record<string, unknown>; // declared: the agent's MCP servers instead of the user's (mcpArgs)
   systemPrompt?: string;
   options?: { model?: string; tools?: string[]; permissionMode?: string; allow?: string[] };
+  appRoot?: string; // the app's folder: what its .claude/settings forbid holds for every agent of the app (appRules)
 };
 
 const out = (
@@ -150,7 +151,7 @@ const settingsArgs = (input: Input, skills: OwnSkills | null, tui = false) => {
   const own = input.options?.allow ?? [];
   settings.permissions = { ...settings.permissions, allow: [...(settings.permissions?.allow ?? []), ...git, ...pagent, ...own] };
   // What the app's root forbids holds for every agent of the app, not only for the one that starts there.
-  const app = appRules(input.cwd);
+  const app = appRules(input);
   for (const k of ["deny", "ask"] as const) if (app[k].length) settings.permissions[k] = [...(settings.permissions[k] ?? []), ...app[k]];
   // If the user runs Claude Code sandboxed, `pagent` must still reach the app's socket (and only that is added).
   if (input.agentSocket) {
@@ -169,12 +170,14 @@ const settingsArgs = (input: Input, skills: OwnSkills | null, tui = false) => {
  * or settings.local.json, for an agent that starts elsewhere: Claude Code reads a project's settings.json only in the
  * folder it starts in, so it would hold for the root's agent alone (settings.local.json is read at the repository's
  * root by recent versions only; a rule twice is harmless). Never `allow`, which would widen what the agent may do.
+ * The root is the app's, as the core says it (appRoot), whatever repository the agent works in or the app is inside;
+ * started without it (not by the engine's core), the root of the git repository the agent works in.
  */
-function appRules(cwd: string): { deny: string[]; ask: string[] } {
+function appRules(input: Input): { deny: string[]; ask: string[] } {
   const rules = { deny: [] as string[], ask: [] as string[] };
-  const root = gitRoot(cwd);
+  const root = input.appRoot ?? gitRoot(input.cwd);
   // A home folder under git (dotfiles) is not a project: its .claude is the user's own config.
-  if (!root || realPath(root) === realPath(cwd) || realPath(root) === realPath(homedir())) return rules;
+  if (!root || realPath(root) === realPath(input.cwd) || realPath(root) === realPath(homedir())) return rules;
   for (const f of ["settings.json", "settings.local.json"]) {
     let permissions: any;
     try {

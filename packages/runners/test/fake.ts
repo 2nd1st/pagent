@@ -13,6 +13,7 @@
 //                        call is kept in the transcript, as Claude Code keeps its Bash calls)
 //   !card <path> [JSON]  write a block of the reply that shows that node as a card
 //   !own                 write the skills and MCP servers the agent declares, as the runner got them (JSON)
+//   !root                write the app's folder, as the runner got it (appRoot)
 //   !title <text>        name the session (as Claude Code's ai-title does); the "last" op says the latest
 //   !agents <n> <ms>     run n sub-agents side by side (as Claude Code's Agent tool does), each a step every ms for 3
 //                        steps, in the generic shape (runners/src/lib/subagents.ts); kept in the transcript as parts
@@ -36,7 +37,8 @@ import type { UIMessage, UIMessageChunk } from "ai";
 // tui: the agent's TUI is running, as this pid; session: the TUI's own (it writes to the session it is on).
 // thread: the thread the agent's session has open (fake-thread.ts).
 // skills, mcps: what the agent declares instead of its harness's own (core: agents/runner.ts, ownConfig).
-type Input = { op: string; message?: string; cwd: string; stateDir: string; env?: Record<string, string>; tui?: number; session?: string; thread?: string; skills?: string[]; mcps?: Record<string, unknown> };
+// appRoot: the app's folder (core: agents/runner.ts, agentInput).
+type Input = { op: string; message?: string; cwd: string; stateDir: string; env?: Record<string, string>; tui?: number; session?: string; thread?: string; skills?: string[]; mcps?: Record<string, unknown>; appRoot?: string };
 // "end": the TUI finished a turn (what the follow op waits for).
 // "parts": parts of the reply other than text (the sub-agents of !agents), as they are shown.
 // "queued": a message typed into the TUI while it was in a turn (Claude Code's queue-operation enqueue); it is a
@@ -87,7 +89,7 @@ type Ctl = { signal?: AbortSignal; next?: () => string | undefined; ask?: (comma
 const stepsOf = (message: string) => message.split("\n").map((l) => l.replace(/^\(from \S+\) /, "").trim());
 
 /** One turn: the message's steps, the reply written to the transcript (and, headless, as chunks). Returns its text. */
-async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps">, message: string, emit: (c: UIMessageChunk) => void, ctl: Ctl = {}): Promise<string> {
+async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps" | "appRoot">, message: string, emit: (c: UIMessageChunk) => void, ctl: Ctl = {}): Promise<string> {
   write(input, "user", message);
   const said: string[] = [];
   const say = (text: string) => {
@@ -114,6 +116,7 @@ async function turn(input: Where & Pick<Input, "cwd" | "env" | "skills" | "mcps"
     else if (step === "card") (acted = true), say("```pagent\n" + arg + "\n```");
     else if (step === "title") write(input, "title", arg);
     else if (step === "own") (acted = true), say(JSON.stringify({ skills: input.skills ?? null, mcps: input.mcps ?? null }));
+    else if (step === "root") (acted = true), say(input.appRoot ?? "");
     else if (step === "slow") {
       acted = true;
       const [n, ms] = arg.split(/\s+/).map(Number);

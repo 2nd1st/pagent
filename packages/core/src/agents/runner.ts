@@ -142,11 +142,13 @@ export function runnerBase(ctx: Ctx, ref: AgentRef, decl: Record<string, unknown
 
 /**
  * What the runner gets to start the agent's harness (a headless turn, a long-lived session, the TUI), on top of
- * runnerBase: how the agent reaches its app (agentAccess), the engine's skills, its system prompt, its declaration.
+ * runnerBase: how the agent reaches its app (agentAccess), the engine's skills, its system prompt, its declaration,
+ * and the app's folder (appRoot: what the app's own harness settings there say holds for every agent of it).
  */
 export async function agentInput(ctx: Ctx, ref: AgentRef, decl: AgentDecl) {
   return {
     ...(await agentAccess(ctx, ref)),
+    appRoot: ctx.root,
     pluginDirs: [engine.skill],
     ...(await ownConfig(ctx, ref, decl)),
     systemPrompt: systemPrompt(ref, nodeFolder(ctx, ref), decl),
